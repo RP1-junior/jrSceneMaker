@@ -309,7 +309,6 @@ function createSidebarItem(obj, name, isGroup=false){
 
   obj.userData.listItem = li;
   modelList.appendChild(li);
-  makeDraggable(li, obj);
 
   if (isGroup) {
     const childList = ensureChildList(li);
@@ -326,7 +325,10 @@ function addGroupToList(group, name){
   createSidebarItem(group, name, true);
   group.userData.listType = "group";
   const childList = group.userData.listItem.nextSibling;
-  group.children.forEach(child=>{
+  
+  // Skip the first child (parent object) and only show other children
+  const childrenToShow = group.children.slice(1);
+  childrenToShow.forEach(child=>{
     const childLi = document.createElement("li");
     const childLabel = document.createElement("span");
     childLabel.textContent = child.name || "Model";
@@ -340,7 +342,6 @@ function addGroupToList(group, name){
 
     child.userData.listItem = childLi;
     childList.appendChild(childLi);
-    makeDraggable(childLi, child);
   });
 }
 
@@ -402,64 +403,6 @@ function renameSelectedObject(){
   if (label) makeLabelEditable(label, selectedObjects[0]);
 }
 
-// ===== Drag-and-drop (reorder + nest) =====
-function makeDraggable(li, obj){
-  li.draggable = true;
-
-  li.addEventListener("dragstart", e=>{
-    draggedItem = { li, obj };
-    e.dataTransfer.effectAllowed = "move";
-  });
-
-  li.addEventListener("dragover", e=>{
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    li.classList.remove("drop-above", "drop-into");
-    const rect = li.getBoundingClientRect();
-    const offsetY = e.clientY - rect.top;
-    if (obj instanceof THREE.Group && offsetY > rect.height/2) li.classList.add("drop-into");
-    else li.classList.add("drop-above");
-  });
-
-  li.addEventListener("dragleave", ()=> li.classList.remove("drop-above","drop-into"));
-
-  li.addEventListener("drop", e=>{
-    e.preventDefault();
-    li.classList.remove("drop-above","drop-into");
-    if (!draggedItem || draggedItem.li === li) return;
-
-    const targetObj = obj;
-    const rect = li.getBoundingClientRect();
-    const offsetY = e.clientY - rect.top;
-
-    if (targetObj instanceof THREE.Group && offsetY > rect.height/2) {
-      targetObj.add(draggedItem.obj);
-      const childList = ensureChildList(li);
-      childList.appendChild(draggedItem.li);
-      setGroupExpanded(li, true);
-    } else {
-      li.parentNode.insertBefore(draggedItem.li, li);
-      const parent = targetObj.parent;
-      parent.remove(draggedItem.obj);
-      const index = parent.children.indexOf(targetObj);
-      parent.children.splice(index, 0, draggedItem.obj);
-      draggedItem.obj.parent = parent;
-    }
-    draggedItem = null;
-  });
-}
-
-modelList.addEventListener("dragover", e => e.preventDefault());
-modelList.addEventListener("drop", e=>{
-  e.preventDefault();
-  if (!draggedItem) return;
-  if (draggedItem.obj.parent && draggedItem.obj.parent !== scene) {
-    draggedItem.obj.parent.remove(draggedItem.obj);
-    scene.add(draggedItem.obj);
-  }
-  modelList.appendChild(draggedItem.li);
-  draggedItem = null;
-});
 
 // ===== Ruler =====
 function createRuler(size, step=1){
@@ -565,6 +508,12 @@ fileInput.addEventListener("change", e=>{
     const model = gltf.scene;
     model.userData.isSelectable = true;
     model.name = (file.name || ("Model "+modelCounter++)).replace(/\.[^/.]+$/, "");
+    // Track original source for export/reference reuse
+    model.userData.sourceRef = {
+      originalFileName: file.name,
+      baseName: model.name,
+      reference: model.name + ".glb"
+    };
     createBoxHelperFor(model);
 
     // Enforce maximum height relative to human guide
@@ -583,12 +532,42 @@ fileInput.addEventListener("change", e=>{
 // ===== Group / Ungroup =====
 function groupSelectedObjects(){
   if (selectedObjects.length < 2) return;
+  
+  // Use the first (top-most) selected object as the parent group
+  const parentObj = selectedObjects[0];
+  const otherObjects = selectedObjects.slice(1);
+  
+  // Convert the parent object to a group
   const group = new THREE.Group();
   group.userData.isSelectable = true;
   group.userData.isEditorGroup = true;
-  group.name = "Group " + Date.now();
-
-  selectedObjects.forEach(obj=>{
+  group.name = parentObj.name || "Group " + Date.now();
+  
+  // Copy parent object's transform to the group
+  group.position.copy(parentObj.position);
+  group.quaternion.copy(parentObj.quaternion);
+  group.scale.copy(parentObj.scale);
+  
+  // Remove parent object from scene and add it as first child of group
+  scene.remove(parentObj);
+  group.add(parentObj);
+  
+  // Reset parent object's transform relative to group
+  parentObj.position.set(0, 0, 0);
+  parentObj.quaternion.set(0, 0, 0, 1);
+  parentObj.scale.set(1, 1, 1);
+  
+  // Clean up parent object's sidebar representation
+  if (parentObj.userData.listItem) {
+    const li = parentObj.userData.listItem;
+    const next = li.nextSibling;
+    li.remove();
+    if(next && next.tagName==="UL") next.remove();
+    delete parentObj.userData.listItem;
+  }
+  
+  // Add other objects to the group
+  otherObjects.forEach(obj=>{
     // Remember how this object appeared in the sidebar before grouping
     if (!obj.userData) obj.userData = {};
     obj.userData.originalListType = obj.userData.listType || (obj instanceof THREE.Group ? "group" : "model");
@@ -989,6 +968,7 @@ function deselectAllSidebar(){
   updatePropertiesPanel(null);
 }
 
+
 // ===== Export JSON (quaternions) =====
 document.getElementById("exportJson").onclick = ()=>{
   function buildNode(obj){
@@ -999,9 +979,12 @@ document.getElementById("exportJson").onclick = ()=>{
     const rawName = (obj.name && obj.name.length) ? obj.name :
       (obj.userData.listItem ? obj.userData.listItem.textContent : "FILE");
     const baseName = rawName.replace(/\.[^/.]+$/, "");
+    const sourceRef = obj.userData?.sourceRef;
     const node = {
       Resource_sName: baseName,
-      Resource_sReference: baseName + ".glb",
+      Resource_sReference: (obj instanceof THREE.Group && obj.userData?.isEditorGroup === true)
+        ? (obj.children[0]?.userData?.sourceRef?.reference || (baseName + ".glb"))
+        : (sourceRef?.reference || (baseName + ".glb")),
       Transform_Position_dX: obj.position.x,
       Transform_Position_dY: obj.position.y,
       Transform_Position_dZ: obj.position.z,
@@ -1019,7 +1002,13 @@ document.getElementById("exportJson").onclick = ()=>{
     if (obj instanceof THREE.Group) {
       node.Resource_bIsGroup = true;
       node.Children = [];
-      obj.children.forEach(child=>{
+      
+      // For editor groups, skip the first child (parent object) and only export other children
+      const childrenToExport = obj.userData?.isEditorGroup === true 
+        ? obj.children.slice(1) 
+        : obj.children;
+        
+      childrenToExport.forEach(child=>{
         const childNode = buildNode(child);
         if (childNode) node.Children.push(childNode);
       });

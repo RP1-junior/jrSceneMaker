@@ -106,9 +106,6 @@ body {
   z-index: 1000;
 }
 
-/* Drag-and-drop feedback */
-#modelList li.drop-above { border-top: 2px solid #4cafef; }
-#modelList li.drop-into { background: rgba(76, 175, 239, 0.2); }
 #modelList li.selected { background: #444; }
 
 /* Caret (disclosure) for groups */
