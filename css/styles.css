@@ -1,0 +1,139 @@
+body {
+  margin: 0;
+  overflow: hidden;
+  background: #202020;
+  font-family: sans-serif;
+  color: white;
+}
+
+#ui {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 6px;
+  border-radius: 4px;
+  user-select: none;
+}
+
+#ui button,
+#ui input[type="file"],
+#ui label {
+  font-size: 13px;
+  color: white;
+}
+
+#ui button {
+  background: #333;
+  border: 1px solid #555;
+  border-radius: 3px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+#ui button:hover {
+  background: #555;
+}
+
+#sidebar {
+  position: absolute;
+  top: 80px;
+  left: 10px;
+  z-index: 10;
+  width: 220px;
+  max-height: 70%;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 6px;
+  border-radius: 4px;
+  user-select: none;
+}
+
+#modelList {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0 0;
+}
+
+#modelList li {
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 3px;
+}
+
+#modelList li:hover {
+  background: #444;
+}
+
+#properties {
+  font-size: 12px;
+  white-space: pre-wrap;
+  margin-top: 6px;
+}
+
+#helpOverlay {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  z-index: 20;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px 10px;
+  border-radius: 4px;
+  max-width: 220px;
+  display: none;
+}
+
+#helpOverlay strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+#contextMenu {
+  position: absolute;
+  display: none;
+  background: #222;
+  border: 1px solid #555;
+  padding: 4px;
+  list-style: none;
+  z-index: 1000;
+}
+
+/* Drag-and-drop feedback */
+#modelList li.drop-above { border-top: 2px solid #4cafef; }
+#modelList li.drop-into { background: rgba(76, 175, 239, 0.2); }
+#modelList li.selected { background: #444; }
+
+/* Caret (disclosure) for groups */
+.caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.caret::before {
+  content: "\25B6"; /* ▶ */
+  font-size: 10px;
+  line-height: 1;
+  color: #ccc;
+  transition: transform 0.12s ease;
+}
+.caret.expanded::before {
+  transform: rotate(90deg);
+}
+.children-collapsed {
+  display: none;
+}
+
+
