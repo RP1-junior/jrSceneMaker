@@ -84,7 +84,10 @@ function updateAllVisuals(obj){
   updateModelProperties(obj);
   updatePropertiesPanel(obj);
   updateBoxHelper(obj);
-  addBoundingBoxDimensions(obj);
+  // Only add dimension labels for selected objects
+  if(selectedObjects.includes(obj)) {
+    addBoundingBoxDimensions(obj);
+  }
 }
 
 function cleanupObject(obj){
@@ -841,9 +844,11 @@ function saveState(){
 }
 function undo(){
   if (!selectedObject || !undoStack.length) return;
-  for (let i=undoStack.length-1; i>=0; i--){
+  
+  // Find the most recent state for the currently selected object
+  for (let i = undoStack.length - 1; i >= 0; i--){
     if (undoStack[i].uuid === selectedObject.uuid){
-      const last = undoStack.splice(i,1)[0];
+      const last = undoStack.splice(i, 1)[0];
       selectedObject.position.copy(last.pos);
       selectedObject.quaternion.copy(last.rot);
       selectedObject.scale.copy(last.scale);
