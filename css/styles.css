@@ -39,6 +39,17 @@ body {
   background: #555;
 }
 
+#ui button:disabled {
+  background: #222;
+  border-color: #333;
+  color: #666;
+  cursor: not-allowed;
+}
+
+#ui button:disabled:hover {
+  background: #222;
+}
+
 #sidebar {
   position: absolute;
   top: 80px;

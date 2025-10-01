@@ -160,6 +160,31 @@ function updatePropertiesPanel(model){
     `Bounds: (${p.size.x.toFixed(2)}, ${p.size.y.toFixed(2)}, ${p.size.z.toFixed(2)})`;
 }
 
+function updateTransformButtonStates(){
+  const editingAllowed = isEditingAllowed();
+  const buttons = [btnTranslate, btnRotate, btnScale];
+  
+  buttons.forEach(btn => {
+    if (editingAllowed) {
+      btn.disabled = false;
+      btn.style.opacity = "1";
+      btn.style.cursor = "pointer";
+    } else {
+      btn.disabled = true;
+      btn.style.opacity = "0.5";
+      btn.style.cursor = "not-allowed";
+    }
+  });
+  
+  // Detach transform gizmo if editing is not allowed
+  if (!editingAllowed) {
+    transform.detach();
+  } else if (selectedObject) {
+    // Reattach to the selected object if editing is allowed
+    transform.attach(selectedObject);
+  }
+}
+
 function createBoxHelperFor(model){
   const helper = new THREE.BoxHelper(model, BOX_COLORS.selected);
   helper.material.transparent = true;
@@ -243,6 +268,59 @@ function dropToFloor(obj){
   updateAllVisuals(obj);
 }
 
+// ===== Selection validation helpers =====
+function isEditingAllowed(){
+  // No editing if no objects selected
+  if (selectedObjects.length === 0) return false;
+  
+  // Single object selected
+  if (selectedObjects.length === 1) {
+    const obj = selectedObjects[0];
+    
+    // If it's a child object in a group, only allow editing if selected from sidebar
+    if (isChildObjectInGroup(obj)) {
+      return isChildObjectSelectedFromSidebar(obj);
+    }
+    
+    // Otherwise, always allow editing
+    return true;
+  }
+  
+  // Multiple objects selected - only allow if they are all part of the same group
+  if (selectedObjects.length > 1) {
+    // Check if all selected objects are children of the same group
+    const firstParent = selectedObjects[0].parent;
+    if (!firstParent || !firstParent.userData?.isEditorGroup) return false;
+    
+    // All selected objects must be children of the same group
+    return selectedObjects.every(obj => obj.parent === firstParent);
+  }
+  
+  return false;
+}
+
+function isChildObjectInGroup(obj){
+  return obj.parent && obj.parent.userData?.isEditorGroup === true;
+}
+
+function isChildObjectSelectedFromSidebar(obj){
+  // Check if this object is a child of a group and was selected from sidebar
+  if (!isChildObjectInGroup(obj)) return false;
+  
+  // Check if the object has a list item that's nested under a group
+  const listItem = obj.userData?.listItem;
+  if (!listItem) return false;
+  
+  // Check if this list item is nested under a group's child list
+  const parentLi = listItem.parentElement;
+  if (!parentLi || parentLi.tagName !== 'UL') return false;
+  
+  const groupLi = parentLi.previousElementSibling;
+  if (!groupLi || !groupLi.querySelector('.caret')) return false;
+  
+  return true;
+}
+
 // ===== Selection (unified) =====
 function selectObject(obj, additive=false, toggle=false){
   if (!additive && !toggle) {
@@ -252,6 +330,7 @@ function selectObject(obj, additive=false, toggle=false){
       if (o.userData.dimGroup) scene.remove(o.userData.dimGroup);
     });
     selectedObjects = [];
+    updateTransformButtonStates();
   }
 
   if (toggle && selectedObjects.includes(obj)) {
@@ -259,19 +338,20 @@ function selectObject(obj, additive=false, toggle=false){
     obj.userData.listItem?.classList.remove("selected");
     setHelperVisible(obj,false);
     updatePropertiesPanel(selectedObjects[selectedObjects.length-1] || null);
+    updateTransformButtonStates();
     return;
   }
 
   if (!selectedObjects.includes(obj)) selectedObjects.push(obj);
   selectedObject = obj;
 
-  transform.attach(obj);
   obj.userData.listItem?.classList.add("selected");
   setHelperVisible(obj,true);
   updateBoxHelper(obj, BOX_COLORS.selected);
   addBoundingBoxDimensions(obj);
   updateModelProperties(obj);
   updatePropertiesPanel(obj);
+  updateTransformButtonStates();
 }
 
 function selectFromSidebar(obj, li, e){
@@ -766,9 +846,15 @@ window.addEventListener("keydown", e=>{
   if (inForm && !isHotkey) return;
 
   switch(key){
-    case "w": transform.setMode("translate"); break;
-    case "e": transform.setMode("rotate"); break;
-    case "r": transform.setMode("scale"); break;
+    case "w": 
+      if (isEditingAllowed()) transform.setMode("translate"); 
+      break;
+    case "e": 
+      if (isEditingAllowed()) transform.setMode("rotate"); 
+      break;
+    case "r": 
+      if (isEditingAllowed()) transform.setMode("scale"); 
+      break;
     case "q":
       if(e.shiftKey){ if(selectedObject) transform.attach(selectedObject); }
       else transform.detach();
@@ -790,9 +876,15 @@ window.addEventListener("keydown", e=>{
 });
 
 // ===== Fix #ui buttons =====
-btnTranslate.onclick = () => transform.setMode("translate");
-btnRotate.onclick = () => transform.setMode("rotate");
-btnScale.onclick = () => transform.setMode("scale");
+btnTranslate.onclick = () => {
+  if (isEditingAllowed()) transform.setMode("translate");
+};
+btnRotate.onclick = () => {
+  if (isEditingAllowed()) transform.setMode("rotate");
+};
+btnScale.onclick = () => {
+  if (isEditingAllowed()) transform.setMode("scale");
+};
 btnDelete.onclick = () => {
   if(selectedObjects.length) [...selectedObjects].forEach(deleteObject);
   else if (selectedObject) deleteObject(selectedObject);
@@ -955,10 +1047,10 @@ function selectAllSidebar(){
   });
   selectedObject = selectedObjects[selectedObjects.length-1] || null;
   if (selectedObject){
-    transform.attach(selectedObject);
     updateModelProperties(selectedObject);
     updatePropertiesPanel(selectedObject);
   }
+  updateTransformButtonStates();
 }
 
 function deselectAllSidebar(){
@@ -971,6 +1063,7 @@ function deselectAllSidebar(){
   selectedObject = null;
   transform.detach();
   updatePropertiesPanel(null);
+  updateTransformButtonStates();
 }
 
 
