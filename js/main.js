@@ -84,6 +84,12 @@ function updateAllVisuals(obj){
   updateModelProperties(obj);
   updatePropertiesPanel(obj);
   updateBoxHelper(obj);
+  
+  // If this is a group, also update child bounding boxes
+  if (obj.userData?.isEditorGroup) {
+    updateChildBoundingBoxes(obj);
+  }
+  
   // Only add dimension labels for selected objects
   if(selectedObjects.includes(obj)) {
     addBoundingBoxDimensions(obj);
@@ -97,6 +103,12 @@ function cleanupObject(obj){
     obj.userData.boxHelper.geometry?.dispose();
     obj.userData.boxHelper.material?.dispose();
     delete obj.userData.boxHelper;
+  }
+  if (obj.userData.parentBoxHelper) {
+    scene.remove(obj.userData.parentBoxHelper);
+    obj.userData.parentBoxHelper.geometry?.dispose();
+    obj.userData.parentBoxHelper.material?.dispose();
+    delete obj.userData.parentBoxHelper;
   }
   if (obj.userData.dimGroup) {
     scene.remove(obj.userData.dimGroup);
@@ -204,6 +216,65 @@ function setHelperVisible(model, visible){
   if(model?.userData.boxHelper) model.userData.boxHelper.visible = !!visible;
 }
 
+function createParentBoxHelperFor(parentGroup){
+  if (!parentGroup || parentGroup.userData.parentBoxHelper) return;
+  const helper = new THREE.BoxHelper(parentGroup, 0x888888); // Gray color for parent
+  helper.material.transparent = true;
+  helper.material.opacity = 0.5;
+  helper.visible = false;
+  parentGroup.userData.parentBoxHelper = helper;
+  scene.add(helper);
+}
+
+function updateParentBoxHelper(parentGroup, color=null){
+  if (!parentGroup?.userData.parentBoxHelper) return;
+  parentGroup.userData.parentBoxHelper.update();
+  if (color) parentGroup.userData.parentBoxHelper.material.color.setHex(color);
+}
+
+function setParentHelperVisible(parentGroup, visible){
+  if(parentGroup?.userData.parentBoxHelper) parentGroup.userData.parentBoxHelper.visible = !!visible;
+}
+
+function showChildBoundingBoxes(group, visible, color = 0x888888, recursive = true){
+  if (!group || !group.userData?.isEditorGroup) return;
+  
+  group.children.forEach(child => {
+    // Ensure child has a box helper
+    if (!child.userData.boxHelper) {
+      createBoxHelperFor(child);
+    }
+    
+    if (visible) {
+      child.userData.boxHelper.visible = true;
+      child.userData.boxHelper.material.color.setHex(color);
+      child.userData.boxHelper.material.opacity = 0.5; // Semi-transparent for child boxes
+    } else {
+      child.userData.boxHelper.visible = false;
+    }
+    
+    // Recursively handle nested groups
+    if (recursive && child.userData?.isEditorGroup) {
+      showChildBoundingBoxes(child, visible, color, recursive);
+    }
+  });
+}
+
+function updateChildBoundingBoxes(group, recursive = true){
+  if (!group || !group.userData?.isEditorGroup) return;
+  
+  group.children.forEach(child => {
+    if (child.userData.boxHelper) {
+      child.userData.boxHelper.update();
+    }
+    
+    // Recursively handle nested groups
+    if (recursive && child.userData?.isEditorGroup) {
+      updateChildBoundingBoxes(child, recursive);
+    }
+  });
+}
+
 function addBoundingBoxDimensions(model){
   if(!loadedFont) return;
   if(model.userData.dimGroup){
@@ -233,15 +304,6 @@ function addBoundingBoxDimensions(model){
   model.userData.dimGroup = group;
 }
 
-// Only used for grouping pivots — keep original pivot for loaded models
-function recenterPivotToBottomCenter(obj){
-  const box = new THREE.Box3().setFromObject(obj);
-  if(box.isEmpty()) return;
-  const center = box.getCenter(new THREE.Vector3());
-  const bottomCenter = new THREE.Vector3(center.x, box.min.y, center.z);
-  obj.children.forEach(child => child.position.sub(bottomCenter));
-  obj.position.add(bottomCenter);
-}
 
 // ===== Transforms: initial & helpers =====
 function storeInitialTransform(obj){
@@ -327,6 +389,14 @@ function selectObject(obj, additive=false, toggle=false){
     selectedObjects.forEach(o=>{
       o.userData.listItem?.classList.remove("selected");
       setHelperVisible(o,false);
+      // Hide parent box helper if object is a child in a group
+      if (isChildObjectInGroup(o) && o.parent) {
+        setParentHelperVisible(o.parent, false);
+      }
+      // Hide child bounding boxes if object is a group
+      if (o.userData?.isEditorGroup) {
+        showChildBoundingBoxes(o, false);
+      }
       if (o.userData.dimGroup) scene.remove(o.userData.dimGroup);
     });
     selectedObjects = [];
@@ -337,6 +407,14 @@ function selectObject(obj, additive=false, toggle=false){
     selectedObjects = selectedObjects.filter(o=>o!==obj);
     obj.userData.listItem?.classList.remove("selected");
     setHelperVisible(obj,false);
+    // Hide parent box helper if object is a child in a group
+    if (isChildObjectInGroup(obj) && obj.parent) {
+      setParentHelperVisible(obj.parent, false);
+    }
+    // Hide child bounding boxes if object is a group
+    if (obj.userData?.isEditorGroup) {
+      showChildBoundingBoxes(obj, false);
+    }
     updatePropertiesPanel(selectedObjects[selectedObjects.length-1] || null);
     updateTransformButtonStates();
     return;
@@ -346,8 +424,31 @@ function selectObject(obj, additive=false, toggle=false){
   selectedObject = obj;
 
   obj.userData.listItem?.classList.add("selected");
+  
+  // Ensure the object has a box helper
+  if (!obj.userData.boxHelper) {
+    createBoxHelperFor(obj);
+  }
+  
   setHelperVisible(obj,true);
   updateBoxHelper(obj, BOX_COLORS.selected);
+  
+  // If this is a child object in a group, also show the parent group's bounding box
+  if (isChildObjectInGroup(obj) && obj.parent) {
+    const parentGroup = obj.parent;
+    // Create parent box helper if it doesn't exist
+    if (!parentGroup.userData.parentBoxHelper) {
+      createParentBoxHelperFor(parentGroup);
+    }
+    setParentHelperVisible(parentGroup, true);
+    updateParentBoxHelper(parentGroup, 0x888888); // Gray color for parent
+  }
+  
+  // If this is a parent group, show child bounding boxes in gray
+  if (obj.userData?.isEditorGroup) {
+    showChildBoundingBoxes(obj, true, 0x888888); // Gray color for children
+  }
+  
   addBoundingBoxDimensions(obj);
   updateModelProperties(obj);
   updatePropertiesPanel(obj);
@@ -365,7 +466,7 @@ function selectFromCanvas(obj, additive){
 }
 
 // ===== Sidebar (DRY creation) =====
-function createSidebarItem(obj, name, isGroup=false){
+function createSidebarItem(obj, name, isGroup=false, parentList=null){
   const li = document.createElement("li");
   let caret = null;
   const label = document.createElement("span");
@@ -391,7 +492,8 @@ function createSidebarItem(obj, name, isGroup=false){
   };
 
   obj.userData.listItem = li;
-  modelList.appendChild(li);
+  const targetList = parentList || modelList;
+  targetList.appendChild(li);
 
   if (isGroup) {
     const childList = ensureChildList(li);
@@ -399,33 +501,58 @@ function createSidebarItem(obj, name, isGroup=false){
   }
 }
 
-function addModelToList(model, name){
-  createSidebarItem(model, name, false);
-  model.userData.listType = "model";
-}
 
-function addGroupToList(group, name){
-  createSidebarItem(group, name, true);
+function addGroupToList(group, name, parentList = null){
+  const targetList = parentList || modelList;
+  createSidebarItem(group, name, true, targetList);
   group.userData.listType = "group";
   const childList = group.userData.listItem.nextSibling;
   
   // Skip the first child (parent object) and only show other children
   const childrenToShow = group.children.slice(1);
   childrenToShow.forEach(child=>{
-    const childLi = document.createElement("li");
-    const childLabel = document.createElement("span");
-    childLabel.textContent = child.name || "Model";
-    childLi.appendChild(childLabel);
-
-    childLi.onclick = e => selectFromSidebar(child, childLi, e);
-    childLi.ondblclick = e => {
-      if (e.target === childLabel) makeLabelEditable(childLabel, child);
-      else { selectFromSidebar(child, childLi, e); frameCameraOn(child); }
-    };
-
-    child.userData.listItem = childLi;
-    childList.appendChild(childLi);
+    if (child.userData?.isEditorGroup) {
+      // This is a nested group - add it recursively
+      addGroupToList(child, child.name || "Group", childList);
+    } else {
+      // This is a regular model - add it as a child item
+      addModelToList(child, child.name || "Model", childList);
+    }
   });
+}
+
+function addModelToList(model, name, parentList = null){
+  const targetList = parentList || modelList;
+  createSidebarItem(model, name, false, targetList);
+  model.userData.listType = "model";
+}
+
+function rebuildGroupSidebar(group) {
+  if (!group || !group.userData?.isEditorGroup) return;
+  
+  // Remove existing child list items
+  const groupLi = group.userData.listItem;
+  if (!groupLi) return;
+  
+  const childList = groupLi.nextSibling;
+  if (childList && childList.tagName === "UL") {
+    // Clear all child items
+    while (childList.firstChild) {
+      childList.removeChild(childList.firstChild);
+    }
+    
+    // Skip the first child (parent object) and only show other children
+    const childrenToShow = group.children.slice(1);
+    childrenToShow.forEach(child => {
+      if (child.userData?.isEditorGroup) {
+        // This is a nested group - add it recursively
+        addGroupToList(child, child.name || "Group", childList);
+      } else {
+        // This is a regular model - add it as a child item
+        addModelToList(child, child.name || "Model", childList);
+      }
+    });
+  }
 }
 
 function ensureChildList(li){
@@ -668,8 +795,8 @@ function groupSelectedObjects(){
   });
 
   scene.add(group);
-  recenterPivotToBottomCenter(group);
   createBoxHelperFor(group);
+  createParentBoxHelperFor(group);
   addGroupToList(group, group.name);
   storeInitialTransform(group);
   selectObject(group);
@@ -681,10 +808,16 @@ function ungroupSelectedObject(){
   const group = selectedObjects[0];
   if (!(group instanceof THREE.Group)) return;
   if (!group.userData || group.userData.isEditorGroup !== true) return;
+  
+  // Hide child bounding boxes before ungrouping
+  showChildBoundingBoxes(group, false);
+  
   while (group.children.length > 0) {
     const child = group.children[0];
     scene.attach(child);
     createBoxHelperFor(child);
+    // Hide the child's bounding box after ungrouping
+    setHelperVisible(child, false);
     // Restore original sidebar representation and label
     if (child.userData?.originalName) child.name = child.userData.originalName;
     const listType = child.userData?.originalListType || child.userData?.listType || (child instanceof THREE.Group ? "group" : "model");
@@ -1057,6 +1190,14 @@ function deselectAllSidebar(){
   selectedObjects.forEach(o=>{
     o.userData.listItem?.classList.remove("selected");
     setHelperVisible(o,false);
+    // Hide parent box helper if object is a child in a group
+    if (isChildObjectInGroup(o) && o.parent) {
+      setParentHelperVisible(o.parent, false);
+    }
+    // Hide child bounding boxes if object is a group
+    if (o.userData?.isEditorGroup) {
+      showChildBoundingBoxes(o, false);
+    }
     if (o.userData.dimGroup) scene.remove(o.userData.dimGroup);
   });
   selectedObjects = [];
