@@ -863,10 +863,79 @@ function ungroupSelectedObject(){
   updatePropertiesPanel(null);
 }
 
+// ===== Helper function to check if group should be removed =====
+function shouldRemoveEmptyGroup(group) {
+  if (!group || !group.userData?.isEditorGroup) return false;
+  
+  // If group has only 1 child (the parent object), it should be removed
+  // If group has 0 children, it should definitely be removed
+  return group.children.length <= 1;
+}
+
+function cleanupEmptyParentGroups(parentGroup) {
+  if (!parentGroup || !parentGroup.userData?.isEditorGroup) return;
+  
+  if (shouldRemoveEmptyGroup(parentGroup)) {
+    const grandParent = parentGroup.parent;
+    
+    // If there's still one child (the parent object), restore it to the scene
+    if (parentGroup.children.length === 1) {
+      const parentObject = parentGroup.children[0];
+      
+      // Restore the parent object's transform and add it back to scene
+      scene.attach(parentObject);
+      
+      // Restore original sidebar representation
+      // For the parent object (first child), it might not have originalName/originalListType
+      // so we use the group's name and determine type based on object type
+      if (parentObject.userData?.originalName) {
+        parentObject.name = parentObject.userData.originalName;
+      } else {
+        // Use the group's name as fallback since the parent object was the basis for the group
+        parentObject.name = parentGroup.name || parentObject.name || "Model";
+      }
+      
+      const listType = parentObject.userData?.originalListType || 
+                      (parentObject instanceof THREE.Group && parentObject.userData?.isEditorGroup ? "group" : "model");
+      
+      if (listType === "group") {
+        addGroupToList(parentObject, parentObject.name || "Group");
+      } else {
+        addModelToList(parentObject, parentObject.name || "Model");
+      }
+      
+      // Clean up the metadata
+      delete parentObject.userData?.originalListType;
+      delete parentObject.userData?.originalName;
+      
+      // Create box helper for the restored object
+      createBoxHelperFor(parentObject);
+      updateAllVisuals(parentObject);
+    }
+    
+    // Clean up and remove the empty group
+    cleanupObject(parentGroup);
+    if (parentGroup.parent) {
+      parentGroup.parent.remove(parentGroup);
+    } else {
+      scene.remove(parentGroup);
+    }
+    
+    // Recursively check if the grandparent group should also be removed
+    if (grandParent && grandParent !== scene) {
+      cleanupEmptyParentGroups(grandParent);
+    }
+  }
+}
+
 // ===== Delete =====
 function deleteObject(obj){
   if(!obj) return;
   if(transform.object===obj) transform.detach();
+  
+  // Remember the parent group before deletion
+  const parentGroup = obj.parent && obj.parent.userData?.isEditorGroup ? obj.parent : null;
+  
   if (obj instanceof THREE.Group) {
     const children = [...obj.children];
     children.forEach(child=>{
@@ -879,6 +948,11 @@ function deleteObject(obj){
   selectedObjects = selectedObjects.filter(o=>o!==obj);
   if(selectedObject===obj) selectedObject=null;
   updatePropertiesPanel(selectedObject||null);
+  
+  // After deletion, check if parent group should be removed
+  if (parentGroup) {
+    cleanupEmptyParentGroups(parentGroup);
+  }
 }
 
 // ===== Camera helpers =====
