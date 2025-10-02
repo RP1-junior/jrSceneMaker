@@ -2122,29 +2122,24 @@ document.getElementById("exportJson").onclick = ()=>{
       (obj.userData.listItem ? obj.userData.listItem.textContent : "FILE");
     const baseName = rawName.replace(/\.[^/.]+$/, "");
     const sourceRef = obj.userData?.sourceRef;
+    
     const node = {
-      Resource_sName: baseName,
-      Resource_sReference: (obj instanceof THREE.Group && obj.userData?.isEditorGroup === true)
-        ? (obj.children[0]?.userData?.sourceRef?.reference || (baseName + ".glb"))
-        : (sourceRef?.reference || (baseName + ".glb")),
-      Transform_Position_dX: obj.position.x,
-      Transform_Position_dY: obj.position.y,
-      Transform_Position_dZ: obj.position.z,
-      Transform_Rotation_dX: q.x,
-      Transform_Rotation_dY: q.y,
-      Transform_Rotation_dZ: q.z,
-      Transform_Rotation_dW: q.w,
-      Transform_Scale_dX: obj.scale.x,
-      Transform_Scale_dY: obj.scale.y,
-      Transform_Scale_dZ: obj.scale.z,
-      Bound_dX: size.x,
-      Bound_dY: size.y,
-      Bound_dZ: size.z
+      pResource: {
+        sName: baseName,
+        sReference: (obj instanceof THREE.Group && obj.userData?.isEditorGroup === true)
+          ? (obj.children[0]?.userData?.sourceRef?.reference || (baseName + ".glb"))
+          : (sourceRef?.reference || (baseName + ".glb"))
+      },
+      pTransform: {
+        aPosition: [obj.position.x, obj.position.y, obj.position.z],
+        aRotation: [q.x, q.y, q.z, q.w],
+        aScale: [obj.scale.x, obj.scale.y, obj.scale.z]
+      },
+      aBound: [size.x, size.y, size.z],
+      aChildren: []
     };
+    
     if (obj instanceof THREE.Group) {
-      node.Resource_bIsGroup = true;
-      node.Children = [];
-      
       // For editor groups, skip the first child (parent object) and only export other children
       const childrenToExport = obj.userData?.isEditorGroup === true 
         ? obj.children.slice(1) 
@@ -2152,11 +2147,10 @@ document.getElementById("exportJson").onclick = ()=>{
         
       childrenToExport.forEach(child=>{
         const childNode = buildNode(child);
-        if (childNode) node.Children.push(childNode);
+        if (childNode) node.aChildren.push(childNode);
       });
-    } else {
-      node.Resource_bIsGroup = false;
     }
+    
     return node;
   }
   const exportData = [];
