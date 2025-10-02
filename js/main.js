@@ -405,14 +405,10 @@ function isEditingAllowed(){
     return true;
   }
   
-  // Multiple objects selected - only allow if they are all part of the same group
+  // Multiple objects selected - transforms are disabled
+  // Users can still delete or duplicate, but not transform
   if (selectedObjects.length > 1) {
-    // Check if all selected objects are children of the same group
-    const firstParent = selectedObjects[0].parent;
-    if (!firstParent || !firstParent.userData?.isEditorGroup) return false;
-    
-    // All selected objects must be children of the same group
-    return selectedObjects.every(obj => obj.parent === firstParent);
+    return false;
   }
   
   return false;
