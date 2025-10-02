@@ -81,6 +81,10 @@ function getBox(obj){ return new THREE.Box3().setFromObject(obj); }
 
 function updateAllVisuals(obj){
   if(!obj) return;
+  
+  // Apply canvas clamp restrictions to any object being transformed
+  clampToCanvas(obj);
+  
   updateModelProperties(obj);
   updatePropertiesPanel(obj);
   updateBoxHelper(obj);
@@ -90,9 +94,33 @@ function updateAllVisuals(obj){
     updateChildBoundingBoxes(obj);
   }
   
+  // If this object is a child in a group, update the parent group's bounding box
+  if (isChildObjectInGroup(obj) && obj.parent) {
+    updateParentGroupBounds(obj.parent);
+  }
+  
   // Only add dimension labels for selected objects
   if(selectedObjects.includes(obj)) {
     addBoundingBoxDimensions(obj);
+  }
+}
+
+function updateParentGroupBounds(parentGroup) {
+  if (!parentGroup || !parentGroup.userData?.isEditorGroup) return;
+  
+  // Update the parent group's box helper
+  if (parentGroup.userData.boxHelper) {
+    parentGroup.userData.boxHelper.update();
+  }
+  
+  // Update the parent group's parent box helper (gray one)
+  if (parentGroup.userData.parentBoxHelper) {
+    parentGroup.userData.parentBoxHelper.update();
+  }
+  
+  // Recursively update parent groups if this group is nested
+  if (isChildObjectInGroup(parentGroup) && parentGroup.parent) {
+    updateParentGroupBounds(parentGroup.parent);
   }
 }
 
@@ -1051,7 +1079,6 @@ transform.addEventListener("objectChange", ()=>{
     selectedObject.scale.set(s,s,s);
     snapUniformScale(selectedObject, SNAP_STEP);
   }
-  clampToCanvas(selectedObject);
   updateAllVisuals(selectedObject);
 });
 
