@@ -144,4 +144,32 @@ body {
   display: none;
 }
 
+/* Drag and drop styles */
+#modelList li.dragging {
+  opacity: 0.5;
+  background: #333;
+  border-left: 3px solid #99ccff;
+}
+
+#modelList li.drag-over {
+  background: #555;
+  border: 2px dashed #99ccff;
+  border-radius: 3px;
+}
+
+#modelList li[draggable="true"]:hover {
+  background: #444;
+  cursor: grab;
+}
+
+#modelList li[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+/* Multi-select drag feedback */
+#modelList li.dragging.multi-select {
+  border-left: 3px solid #ffcc00;
+  background: #444;
+}
+
 

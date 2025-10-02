@@ -25,12 +25,16 @@ orbit.minDistance = 1;
 orbit.maxDistance = groundSize * 1.5;
 
 const transform = new THREE.TransformControls(camera, renderer.domElement);
+transform.setSpace('local'); // Use local space for better rotation behavior
+transform.setSize(0.8); // Slightly smaller gizmo for better visibility
 scene.add(transform);
 
 let selectedObject = null;
 let selectedObjects = [];
 let hoveredObject = null;
 let draggedItem = null;
+let draggedObject = null;
+let draggedObjects = []; // Array to hold multiple dragged objects
 let isAltPressed = false;
 let isDuplicating = false;
 let originalObject = null;
@@ -85,8 +89,8 @@ function getBox(obj){ return new THREE.Box3().setFromObject(obj); }
 function updateAllVisuals(obj){
   if(!obj) return;
   
-  // Apply canvas clamp restrictions to any object being transformed
-  clampToCanvas(obj);
+  // Apply canvas clamp restrictions to any object being transformed (including nested objects)
+  clampToCanvasRecursive(obj);
   
   updateModelProperties(obj);
   updatePropertiesPanel(obj);
@@ -178,6 +182,28 @@ function clampToCanvas(obj){
   if (minZ < -half) obj.position.z += -half - minZ;
   if (maxZ >  half) obj.position.z -= maxZ - half;
   if (box.min.y < 0) obj.position.y += -box.min.y;
+}
+
+function clampToCanvasRecursive(obj){
+  // Only clamp top-level groups as single units
+  // Nested groups should move with their parent group, not be individually clamped
+  if (obj.userData?.isEditorGroup) {
+    // Only clamp the group as a whole unit
+    // Do NOT recursively clamp nested groups - they should move with the parent
+    clampToCanvas(obj);
+  } else {
+    // For non-groups, clamp normally
+    clampToCanvas(obj);
+  }
+}
+
+function findTopLevelGroup(obj) {
+  // Find the top-level group in the hierarchy (the one directly attached to scene)
+  let current = obj;
+  while (current.parent && current.parent !== scene && current.parent.userData?.isEditorGroup) {
+    current = current.parent;
+  }
+  return current;
 }
 
 function updateModelProperties(model){
@@ -503,6 +529,10 @@ function createSidebarItem(obj, name, isGroup=false, parentList=null){
   const label = document.createElement("span");
   label.textContent = name;
 
+  // Make list item draggable
+  li.draggable = true;
+  li.setAttribute('data-object-id', obj.uuid);
+
   if (isGroup) {
     caret = document.createElement("span");
     caret.className = "caret";
@@ -521,6 +551,14 @@ function createSidebarItem(obj, name, isGroup=false, parentList=null){
     if (e.target === label) makeLabelEditable(label, obj);
     else { selectFromSidebar(obj, li, e); frameCameraOn(obj); }
   };
+
+  // Drag and drop event handlers
+  li.addEventListener('dragstart', handleDragStart);
+  li.addEventListener('dragend', handleDragEnd);
+  li.addEventListener('dragover', handleDragOver);
+  li.addEventListener('dragenter', handleDragEnter);
+  li.addEventListener('dragleave', handleDragLeave);
+  li.addEventListener('drop', handleDrop);
 
   obj.userData.listItem = li;
   const targetList = parentList || modelList;
@@ -771,6 +809,7 @@ fileInput.addEventListener("change", e=>{
 });
 
 // ===== Group / Ungroup =====
+// DEPRECATED: Use drag-and-drop grouping instead
 function groupSelectedObjects(){
   if (selectedObjects.length < 2) return;
   
@@ -856,7 +895,16 @@ function ungroupSelectedObject(){
     else addModelToList(child, child.name || "Model");
     delete child.userData?.originalListType;
     delete child.userData?.originalName;
-    updateAllVisuals(child);
+    
+    // Update visuals without clamping to preserve world positions during ungrouping
+    updateModelProperties(child);
+    updatePropertiesPanel(child);
+    updateBoxHelper(child);
+    
+    // If this is a group, also update child bounding boxes
+    if (child.userData?.isEditorGroup) {
+      updateChildBoundingBoxes(child);
+    }
   }
   cleanupObject(group);
   scene.remove(group);
@@ -929,6 +977,431 @@ function cleanupEmptyParentGroups(parentGroup) {
       cleanupEmptyParentGroups(grandParent);
     }
   }
+}
+
+// ===== Drag and Drop Grouping =====
+function handleDragStart(e) {
+  const li = e.target.closest('li');
+  if (!li) return;
+  
+  const objectId = li.getAttribute('data-object-id');
+  draggedObject = scene.getObjectByProperty('uuid', objectId);
+  draggedItem = li;
+  
+  // Check if the dragged object is part of the current selection
+  if (selectedObjects.includes(draggedObject)) {
+    // Drag all selected objects
+    draggedObjects = [...selectedObjects];
+    // Add visual feedback to all selected items
+    selectedObjects.forEach(obj => {
+      if (obj.userData.listItem) {
+        obj.userData.listItem.classList.add('dragging');
+        if (selectedObjects.length > 1) {
+          obj.userData.listItem.classList.add('multi-select');
+        }
+      }
+    });
+  } else {
+    // Drag only the single object
+    draggedObjects = [draggedObject];
+    li.classList.add('dragging');
+  }
+  
+  // Set drag effect
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', objectId);
+}
+
+function handleDragEnd(e) {
+  // Clean up drag state and visual feedback for all dragged objects
+  draggedObjects.forEach(obj => {
+    if (obj.userData.listItem) {
+      obj.userData.listItem.classList.remove('dragging');
+      obj.userData.listItem.classList.remove('multi-select');
+    }
+  });
+  
+  // Remove drag-over class from all items
+  document.querySelectorAll('#modelList li.drag-over').forEach(item => {
+    item.classList.remove('drag-over');
+  });
+  
+  // Reset drag state
+  draggedObject = null;
+  draggedObjects = [];
+  draggedItem = null;
+}
+
+function handleDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+}
+
+function handleDragEnter(e) {
+  e.preventDefault();
+  const li = e.target.closest('li');
+  if (!li || li === draggedItem) return;
+  
+  const targetObjectId = li.getAttribute('data-object-id');
+  const targetObject = scene.getObjectByProperty('uuid', targetObjectId);
+  
+  // Check if this is a valid drop target for all dragged objects
+  const allValid = draggedObjects.every(draggedObj => 
+    isValidDropTarget(draggedObj, targetObject)
+  );
+  
+  if (allValid) {
+    li.classList.add('drag-over');
+  }
+}
+
+function handleDragLeave(e) {
+  const li = e.target.closest('li');
+  if (!li) return;
+  
+  // Only remove drag-over if we're actually leaving the element
+  const rect = li.getBoundingClientRect();
+  const x = e.clientX;
+  const y = e.clientY;
+  
+  if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+    li.classList.remove('drag-over');
+  }
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  
+  const li = e.target.closest('li');
+  if (!li || li === draggedItem) return;
+  
+  const targetObjectId = li.getAttribute('data-object-id');
+  const targetObject = scene.getObjectByProperty('uuid', targetObjectId);
+  
+  // Clean up visual feedback
+  li.classList.remove('drag-over');
+  draggedObjects.forEach(obj => {
+    if (obj.userData.listItem) {
+      obj.userData.listItem.classList.remove('dragging');
+      obj.userData.listItem.classList.remove('multi-select');
+    }
+  });
+  
+  // Perform the grouping operation for multiple objects
+  if (draggedObjects.length > 0 && targetObject) {
+    // Validate all objects can be dropped
+    const allValid = draggedObjects.every(draggedObj => 
+      isValidDropTarget(draggedObj, targetObject)
+    );
+    
+    if (allValid) {
+      createGroupFromMultipleDragDrop(draggedObjects, targetObject);
+    }
+  }
+  
+  // Reset drag state
+  draggedObject = null;
+  draggedObjects = [];
+  draggedItem = null;
+}
+
+function isValidDropTarget(draggedObj, targetObj) {
+  if (!draggedObj || !targetObj) return false;
+  if (draggedObj === targetObj) return false;
+  
+  // Prevent dropping a parent group onto its own child
+  if (isDescendantOf(targetObj, draggedObj)) return false;
+  
+  // Prevent dropping onto objects that are already children in the same group
+  if (draggedObj.parent && targetObj.parent && 
+      draggedObj.parent === targetObj.parent && 
+      draggedObj.parent.userData?.isEditorGroup) return false;
+  
+  // Groups can be dropped onto other groups (to add as children)
+  // or onto regular objects (to create nested groups)
+  // No additional restrictions needed for nested groups
+  
+  return true;
+}
+
+function isDescendantOf(obj, ancestor) {
+  let current = obj.parent;
+  while (current && current !== scene) {
+    if (current === ancestor) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+function createGroupFromDragDrop(draggedObj, targetObj) {
+  // If target is already a group, just add the dragged object to it
+  if (targetObj instanceof THREE.Group && targetObj.userData?.isEditorGroup) {
+    addObjectToExistingGroup(draggedObj, targetObj);
+    return;
+  }
+  
+  // Create a new group with target as parent
+  const group = new THREE.Group();
+  group.userData.isSelectable = true;
+  group.userData.isEditorGroup = true;
+  group.name = targetObj.name || "Group " + Date.now();
+  
+  // Copy target object's transform to the group
+  group.position.copy(targetObj.position);
+  group.quaternion.copy(targetObj.quaternion);
+  group.scale.copy(targetObj.scale);
+  
+  // Remember if target was in a parent group
+  const targetParent = targetObj.parent;
+  const wasInGroup = targetParent && targetParent.userData?.isEditorGroup;
+  
+  // Remove target object from its current parent and add it as first child of group
+  if (targetParent) {
+    targetParent.remove(targetObj);
+  } else {
+    scene.remove(targetObj);
+  }
+  group.add(targetObj);
+  
+  // Reset target object's transform relative to group
+  targetObj.position.set(0, 0, 0);
+  targetObj.quaternion.set(0, 0, 0, 1);
+  targetObj.scale.set(1, 1, 1);
+  
+  // Clean up target object's sidebar representation
+  if (targetObj.userData.listItem) {
+    const li = targetObj.userData.listItem;
+    const next = li.nextSibling;
+    li.remove();
+    if(next && next.tagName==="UL") next.remove();
+    delete targetObj.userData.listItem;
+  }
+  
+  // Add group to scene or parent FIRST (before adding dragged object)
+  // This ensures the group has a valid world matrix for transform calculations
+  if (wasInGroup) {
+    targetParent.add(group);
+  } else {
+    scene.add(group);
+  }
+  
+  // Now add dragged object to the group (world transform will be preserved correctly)
+  addObjectToGroup(draggedObj, group);
+  
+  // Update visuals and sidebar
+  if (wasInGroup) {
+    rebuildGroupSidebar(targetParent);
+    
+    // For nested groups, only update visuals (no clamping)
+    updateModelProperties(group);
+    updatePropertiesPanel(group);
+    updateBoxHelper(group);
+    updateChildBoundingBoxes(group);
+    updateParentGroupBounds(targetParent);
+  } else {
+    createBoxHelperFor(group);
+    createParentBoxHelperFor(group);
+    addGroupToList(group, group.name);
+    
+    // For top-level groups, apply clamping
+    updateAllVisuals(group);
+  }
+  
+  storeInitialTransform(group);
+  selectObject(group);
+  saveState();
+}
+
+function addObjectToExistingGroup(obj, group) {
+  // If the object is already a direct child of the target group, do nothing
+  if (obj.parent === group) {
+    return;
+  }
+  
+  // Remove object from its current parent
+  const objParent = obj.parent;
+  if (objParent) {
+    objParent.remove(obj);
+    if (objParent.userData?.isEditorGroup) {
+      rebuildGroupSidebar(objParent);
+      // Check if parent group should be cleaned up after removing the object
+      cleanupEmptyParentGroups(objParent);
+    }
+  } else {
+    scene.remove(obj);
+  }
+  
+  // Add to the target group (this will handle sidebar cleanup and world transform preservation)
+  addObjectToGroup(obj, group);
+  
+  // Rebuild the group's sidebar
+  rebuildGroupSidebar(group);
+  
+  // Update visuals without clamping to preserve world positions
+  updateModelProperties(group);
+  updatePropertiesPanel(group);
+  updateBoxHelper(group);
+  
+  // If this is a group, also update child bounding boxes
+  if (group.userData?.isEditorGroup) {
+    updateChildBoundingBoxes(group);
+  }
+  
+  // If this object is a child in a group, update the parent group's bounding box
+  if (isChildObjectInGroup(group) && group.parent) {
+    updateParentGroupBounds(group.parent);
+  }
+  
+  saveState();
+}
+
+function addObjectToGroup(obj, group) {
+  // Store original metadata
+  if (!obj.userData) obj.userData = {};
+  obj.userData.originalListType = obj.userData.listType || (obj instanceof THREE.Group ? "group" : "model");
+  obj.userData.originalName = obj.name;
+
+  // Clean up existing helpers
+  if(obj.userData.boxHelper){ scene.remove(obj.userData.boxHelper); delete obj.userData.boxHelper; }
+  if(obj.userData.dimGroup){ scene.remove(obj.userData.dimGroup); delete obj.userData.dimGroup; }
+
+  // Remove from current sidebar listing
+  if (obj.userData.listItem) {
+    const li = obj.userData.listItem;
+    const next = li.nextSibling;
+    li.remove();
+    if(next && next.tagName==="UL") next.remove();
+    delete obj.userData.listItem;
+  }
+
+  // --- World transform preservation logic ---
+  // 1. Store world transform before moving
+  const worldPosition = new THREE.Vector3();
+  const worldQuaternion = new THREE.Quaternion();
+  const worldScale = new THREE.Vector3();
+  obj.getWorldPosition(worldPosition);
+  obj.getWorldQuaternion(worldQuaternion);
+  obj.getWorldScale(worldScale);
+
+  // 2. Ensure the group and all ancestors are in the scene and matrices are up-to-date
+  scene.updateMatrixWorld(true);
+
+  // 3. Calculate the correct local transform
+  const groupWorldMatrix = new THREE.Matrix4();
+  group.updateMatrixWorld(true);
+  groupWorldMatrix.copy(group.matrixWorld);
+
+  const targetWorldMatrix = new THREE.Matrix4();
+  targetWorldMatrix.compose(worldPosition, worldQuaternion, worldScale);
+
+  const localMatrix = new THREE.Matrix4();
+  localMatrix.copy(groupWorldMatrix).invert().multiply(targetWorldMatrix);
+
+  // 4. Decompose and set the local transform
+  const localPosition = new THREE.Vector3();
+  const localQuaternion = new THREE.Quaternion();
+  const localScale = new THREE.Vector3();
+  localMatrix.decompose(localPosition, localQuaternion, localScale);
+
+  obj.position.copy(localPosition);
+  obj.quaternion.copy(localQuaternion);
+  obj.scale.copy(localScale);
+
+  // 5. Now add to group - the transform should already be correct
+  group.add(obj);
+
+  // (Optional) Verify the world transform is preserved
+  // const verifyWorldPosition = new THREE.Vector3();
+  // obj.getWorldPosition(verifyWorldPosition);
+  // if (!worldPosition.equals(verifyWorldPosition, 0.001)) {
+  //   console.warn('World transform not preserved:', worldPosition, verifyWorldPosition);
+  // }
+}
+
+function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
+  if (draggedObjects.length === 0) return;
+  
+  // If target is already a group, add all objects to it
+  if (targetObj instanceof THREE.Group && targetObj.userData?.isEditorGroup) {
+    draggedObjects.forEach(draggedObj => {
+      addObjectToExistingGroup(draggedObj, targetObj);
+    });
+    return;
+  }
+  
+  // Create a new group with target as parent
+  const group = new THREE.Group();
+  group.userData.isSelectable = true;
+  group.userData.isEditorGroup = true;
+  group.name = targetObj.name || "Group " + Date.now();
+  
+  // Copy target object's transform to the group
+  group.position.copy(targetObj.position);
+  group.quaternion.copy(targetObj.quaternion);
+  group.scale.copy(targetObj.scale);
+  
+  // Remember if target was in a parent group
+  const targetParent = targetObj.parent;
+  const wasInGroup = targetParent && targetParent.userData?.isEditorGroup;
+  
+  // Remove target object from its current parent and add it as first child of group
+  if (targetParent) {
+    targetParent.remove(targetObj);
+  } else {
+    scene.remove(targetObj);
+  }
+  group.add(targetObj);
+  
+  // Reset target object's transform relative to group
+  targetObj.position.set(0, 0, 0);
+  targetObj.quaternion.set(0, 0, 0, 1);
+  targetObj.scale.set(1, 1, 1);
+  
+  // Clean up target object's sidebar representation
+  if (targetObj.userData.listItem) {
+    const li = targetObj.userData.listItem;
+    const next = li.nextSibling;
+    li.remove();
+    if(next && next.tagName==="UL") next.remove();
+    delete targetObj.userData.listItem;
+  }
+  
+  // Add group to scene or parent FIRST (before adding dragged objects)
+  // This ensures the group has a valid world matrix for transform calculations
+  if (wasInGroup) {
+    targetParent.add(group);
+  } else {
+    scene.add(group);
+  }
+  
+  // Now add all dragged objects to the group (world transforms will be preserved correctly)
+  draggedObjects.forEach(draggedObj => {
+    addObjectToGroup(draggedObj, group);
+  });
+  
+  // Update visuals and sidebar
+  if (wasInGroup) {
+    rebuildGroupSidebar(targetParent);
+    
+    // For nested groups, only update visuals (no clamping)
+    updateModelProperties(group);
+    updatePropertiesPanel(group);
+    updateBoxHelper(group);
+    updateChildBoundingBoxes(group);
+    updateParentGroupBounds(targetParent);
+  } else {
+    createBoxHelperFor(group);
+    createParentBoxHelperFor(group);
+    addGroupToList(group, group.name);
+    
+    // For top-level groups, apply clamping
+    updateAllVisuals(group);
+  }
+  
+  storeInitialTransform(group);
+  selectObject(group);
+  saveState();
 }
 
 // ===== Duplication =====
@@ -1056,7 +1529,7 @@ function duplicateSelectedObjects() {
       
       // Store initial transform and apply canvas constraints
       storeInitialTransform(duplicate);
-      clampToCanvas(duplicate);
+      clampToCanvasRecursive(duplicate);
       updateAllVisuals(duplicate);
       
       duplicates.push(duplicate);
@@ -1387,9 +1860,15 @@ transform.addEventListener("dragging-changed", e=>{
       
       // Apply canvas constraints to the duplicate
       if (selectedObject) {
-        clampToCanvas(selectedObject);
+        clampToCanvasRecursive(selectedObject);
         updateAllVisuals(selectedObject);
         addBoundingBoxDimensions(selectedObject);
+      }
+    } else {
+      // Apply clamping after any transform operation is completed
+      if (selectedObject) {
+        clampToCanvasRecursive(selectedObject);
+        updateAllVisuals(selectedObject);
       }
     }
     
@@ -1404,12 +1883,40 @@ transform.addEventListener("dragging-changed", e=>{
 
 transform.addEventListener("objectChange", ()=>{
   if(!selectedObject) return;
-  if(transform.getMode()==="scale"){
+  
+  const mode = transform.getMode();
+  
+  if(mode === "scale"){
     const s = selectedObject.scale.x;
     selectedObject.scale.set(s,s,s);
     snapUniformScale(selectedObject, SNAP_STEP);
   }
-  updateAllVisuals(selectedObject);
+  
+  // Don't clamp during rotation to avoid interfering with the rotation gizmo
+  if(mode === "rotate") {
+    // Only update visuals without clamping during rotation
+    updateModelProperties(selectedObject);
+    updatePropertiesPanel(selectedObject);
+    updateBoxHelper(selectedObject);
+    
+    // If this is a group, also update child bounding boxes
+    if (selectedObject.userData?.isEditorGroup) {
+      updateChildBoundingBoxes(selectedObject);
+    }
+    
+    // If this object is a child in a group, update the parent group's bounding box
+    if (isChildObjectInGroup(selectedObject) && selectedObject.parent) {
+      updateParentGroupBounds(selectedObject.parent);
+    }
+    
+    // Only add dimension labels for selected objects
+    if(selectedObjects.includes(selectedObject)) {
+      addBoundingBoxDimensions(selectedObject);
+    }
+  } else {
+    // For translate and scale modes, use full updateAllVisuals (including clamping)
+    updateAllVisuals(selectedObject);
+  }
 });
 
 // ===== Undo =====
@@ -1458,7 +1965,6 @@ const contextMenu = (function(){
 
 const contextActions = {
   "Duplicate": () => duplicateSelectedObjects(),
-  "Group": () => groupSelectedObjects(),
   "Ungroup": () => ungroupSelectedObject(),
   "Reset Transform": () => selectedObjects.forEach(resetTransform),
   "Drop to Floor": () => selectedObjects.forEach(dropToFloor),
@@ -1488,13 +1994,14 @@ document.addEventListener("click", ()=> contextMenu.style.display="none");
 renderer.domElement.addEventListener("contextmenu", e=>{
   e.preventDefault();
   let actions = ["Select All","Deselect All"];
-  if (selectedObjects.length > 1) {
-    actions = ["Duplicate","Group","Reset Transform","Drop to Floor","Select All","Deselect All"];
-  } else if (selectedObjects.length === 1) {
-    const obj = selectedObjects[0];
+  if (selectedObjects.length > 0) {
     actions = ["Duplicate","Reset Transform","Drop to Floor","Select All","Deselect All"];
-    if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
-      actions.splice(1, 0, "Ungroup"); // Insert "Ungroup" after "Duplicate"
+    // Only show Ungroup for single selected groups
+    if (selectedObjects.length === 1) {
+      const obj = selectedObjects[0];
+      if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
+        actions.splice(1, 0, "Ungroup"); // Insert "Ungroup" after "Duplicate"
+      }
     }
   }
   showContextMenu(e.clientX, e.clientY, actions);
@@ -1510,11 +2017,10 @@ modelList.addEventListener("contextmenu", e=>{
   if (!selectedObjects.includes(obj)) selectFromSidebar(obj, li, e);
 
   let actions = ["Select All","Deselect All"];
-  if (selectedObjects.length > 1) {
-    actions = ["Duplicate","Group","Reset Transform","Drop to Floor","Select All","Deselect All"];
-  } else if (selectedObjects.length === 1) {
+  if (selectedObjects.length > 0) {
     actions = ["Duplicate","Reset Transform","Drop to Floor","Select All","Deselect All"];
-    if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
+    // Only show Ungroup for single selected groups
+    if (selectedObjects.length === 1 && (obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
       actions.splice(1, 0, "Ungroup"); // Insert "Ungroup" after "Duplicate"
     }
   }
