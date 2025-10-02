@@ -31,6 +31,9 @@ let selectedObject = null;
 let selectedObjects = [];
 let hoveredObject = null;
 let draggedItem = null;
+let isAltPressed = false;
+let isDuplicating = false;
+let originalObject = null;
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
 const dirLight = new THREE.DirectionalLight(0xffffff, 1);
@@ -928,6 +931,169 @@ function cleanupEmptyParentGroups(parentGroup) {
   }
 }
 
+// ===== Duplication =====
+function duplicateObject(obj, offset = new THREE.Vector3(1, 0, 1)) {
+  if (!obj || !obj.userData?.isSelectable) return null;
+  
+  let duplicate;
+  
+  if (obj instanceof THREE.Group && obj.userData?.isEditorGroup) {
+    // Handle editor groups
+    duplicate = new THREE.Group();
+    duplicate.userData.isSelectable = true;
+    duplicate.userData.isEditorGroup = true;
+    
+    // Copy transform
+    duplicate.position.copy(obj.position).add(offset);
+    duplicate.quaternion.copy(obj.quaternion);
+    duplicate.scale.copy(obj.scale);
+    
+    // Generate unique name
+    duplicate.name = generateUniqueName(obj.name || "Group");
+    
+    // Copy source reference from the first child (parent object)
+    if (obj.children[0]?.userData?.sourceRef) {
+      duplicate.userData.sourceRef = { ...obj.children[0].userData.sourceRef };
+    }
+    
+    // Duplicate all children
+    obj.children.forEach(child => {
+      const childDuplicate = duplicateObject(child, new THREE.Vector3(0, 0, 0)); // No offset for children
+      if (childDuplicate) {
+        duplicate.add(childDuplicate);
+      }
+    });
+  } else {
+    // Handle regular models
+    duplicate = obj.clone(true); // Deep clone with children
+    
+    // Deep clone materials and geometries to avoid sharing
+    duplicate.traverse(node => {
+      if (node.isMesh) {
+        if (node.material) {
+          if (Array.isArray(node.material)) {
+            node.material = node.material.map(mat => mat.clone());
+          } else {
+            node.material = node.material.clone();
+          }
+        }
+        if (node.geometry) {
+          node.geometry = node.geometry.clone();
+        }
+      }
+    });
+    
+    // Copy and update userData
+    duplicate.userData = { ...obj.userData };
+    duplicate.userData.isSelectable = true;
+    
+    // Copy source reference
+    if (obj.userData?.sourceRef) {
+      duplicate.userData.sourceRef = { ...obj.userData.sourceRef };
+    }
+    
+    // Generate unique name
+    duplicate.name = generateUniqueName(obj.name || "Model");
+    
+    // Apply position offset
+    duplicate.position.copy(obj.position).add(offset);
+  }
+  
+  // Clear any existing helpers and list items
+  delete duplicate.userData.boxHelper;
+  delete duplicate.userData.parentBoxHelper;
+  delete duplicate.userData.dimGroup;
+  delete duplicate.userData.listItem;
+  
+  return duplicate;
+}
+
+function generateUniqueName(baseName) {
+  const existingNames = new Set();
+  scene.traverse(obj => {
+    if (obj.name) existingNames.add(obj.name);
+  });
+  
+  let counter = 1;
+  let newName = `${baseName} Copy`;
+  
+  while (existingNames.has(newName)) {
+    counter++;
+    newName = `${baseName} Copy ${counter}`;
+  }
+  
+  return newName;
+}
+
+function duplicateSelectedObjects() {
+  if (selectedObjects.length === 0) return;
+  
+  const duplicates = [];
+  const offset = new THREE.Vector3(1, 0, 1); // Default offset for non-gizmo duplication
+  
+  selectedObjects.forEach(obj => {
+    const duplicate = duplicateObject(obj, offset);
+    if (duplicate) {
+      // Add to scene (or parent group if original was in a group)
+      const originalParent = obj.parent;
+      if (originalParent && originalParent.userData?.isEditorGroup && originalParent !== scene) {
+        // If original was in a group, add duplicate to the same group
+        originalParent.add(duplicate);
+        // Update the parent group's sidebar
+        rebuildGroupSidebar(originalParent);
+      } else {
+        // Add to scene
+        scene.add(duplicate);
+        // Add to sidebar
+        if (duplicate.userData?.isEditorGroup) {
+          addGroupToList(duplicate, duplicate.name);
+        } else {
+          addModelToList(duplicate, duplicate.name);
+        }
+      }
+      
+      createBoxHelperFor(duplicate);
+      
+      // Store initial transform and apply canvas constraints
+      storeInitialTransform(duplicate);
+      clampToCanvas(duplicate);
+      updateAllVisuals(duplicate);
+      
+      duplicates.push(duplicate);
+    }
+  });
+  
+  // Select the duplicated objects
+  if (duplicates.length > 0) {
+    selectedObjects.forEach(obj => {
+      obj.userData.listItem?.classList.remove("selected");
+      setHelperVisible(obj, false);
+      if (obj.userData.dimGroup) scene.remove(obj.userData.dimGroup);
+    });
+    
+    selectedObjects = [...duplicates];
+    selectedObject = duplicates[duplicates.length - 1];
+    
+    duplicates.forEach(obj => {
+      obj.userData.listItem?.classList.add("selected");
+      setHelperVisible(obj, true);
+      updateBoxHelper(obj, BOX_COLORS.selected);
+      addBoundingBoxDimensions(obj);
+    });
+    
+    updateModelProperties(selectedObject);
+    updatePropertiesPanel(selectedObject);
+    updateTransformButtonStates();
+    
+    // Attach transform to the last selected duplicate
+    if (selectedObject && isEditingAllowed()) {
+      transform.attach(selectedObject);
+    }
+    
+    saveState();
+  }
+}
+
 // ===== Delete =====
 function deleteObject(obj){
   if(!obj) return;
@@ -1077,8 +1243,13 @@ renderer.domElement.addEventListener("dblclick", e=>{
 window.addEventListener("keydown", e=>{
   const key = e.key.toLowerCase();
   const inForm = (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
-  const isHotkey = ["w","e","r","q","f","h","z","delete"].includes(key);
+  const isHotkey = ["w","e","r","q","f","h","z","delete","d","alt"].includes(key);
   if (inForm && !isHotkey) return;
+
+  // Track Alt key for duplication
+  if (key === "alt") {
+    isAltPressed = true;
+  }
 
   switch(key){
     case "w": 
@@ -1104,9 +1275,24 @@ window.addEventListener("keydown", e=>{
       if(selectedObjects.length) [...selectedObjects].forEach(deleteObject);
       else if (selectedObject) deleteObject(selectedObject);
       break;
+    case "d":
+      if ((e.ctrlKey || e.metaKey) && !inForm) {
+        e.preventDefault();
+        duplicateSelectedObjects();
+      }
+      break;
     default:
       if ((e.ctrlKey||e.metaKey) && key==="z"){ e.preventDefault(); undo(); }
       break;
+  }
+});
+
+window.addEventListener("keyup", e=>{
+  const key = e.key.toLowerCase();
+  
+  // Track Alt key release
+  if (key === "alt") {
+    isAltPressed = false;
   }
 });
 
@@ -1139,11 +1325,81 @@ window.addEventListener("resize", ()=>{
 // ===== Transform events =====
 transform.addEventListener("dragging-changed", e=>{
   orbit.enabled = !e.value;
-  selectedObjects.forEach(o=>{
-    updateBoxHelper(o, e.value?BOX_COLORS.editing:BOX_COLORS.selected);
-    setHelperVisible(o,true);
-  });
-  if (!e.value) saveState();
+  
+  if (e.value) {
+    // Starting to drag
+    if (isAltPressed && selectedObject && !isDuplicating) {
+      // Create duplicate and switch to it
+      isDuplicating = true;
+      originalObject = selectedObject;
+      
+      const duplicate = duplicateObject(selectedObject, new THREE.Vector3(0, 0, 0)); // No initial offset for gizmo duplication
+      if (duplicate) {
+        // Add to scene (or parent group if original was in a group)
+        const originalParent = selectedObject.parent;
+        if (originalParent && originalParent.userData?.isEditorGroup && originalParent !== scene) {
+          // If original was in a group, add duplicate to the same group
+          originalParent.add(duplicate);
+          // Update the parent group's sidebar
+          rebuildGroupSidebar(originalParent);
+        } else {
+          // Add to scene
+          scene.add(duplicate);
+          // Add to sidebar
+          if (duplicate.userData?.isEditorGroup) {
+            addGroupToList(duplicate, duplicate.name);
+          } else {
+            addModelToList(duplicate, duplicate.name);
+          }
+        }
+        
+        createBoxHelperFor(duplicate);
+        
+        // Store initial transform and apply canvas constraints
+        storeInitialTransform(duplicate);
+        
+        // Switch selection to duplicate
+        selectedObjects.forEach(obj => {
+          obj.userData.listItem?.classList.remove("selected");
+          setHelperVisible(obj, false);
+          if (obj.userData.dimGroup) scene.remove(obj.userData.dimGroup);
+        });
+        
+        selectedObjects = [duplicate];
+        selectedObject = duplicate;
+        
+        duplicate.userData.listItem?.classList.add("selected");
+        setHelperVisible(duplicate, true);
+        updateBoxHelper(duplicate, BOX_COLORS.editing);
+        
+        // Attach transform to duplicate
+        transform.attach(duplicate);
+        
+        updateModelProperties(duplicate);
+        updatePropertiesPanel(duplicate);
+      }
+    }
+  } else {
+    // Finished dragging
+    if (isDuplicating) {
+      isDuplicating = false;
+      originalObject = null;
+      
+      // Apply canvas constraints to the duplicate
+      if (selectedObject) {
+        clampToCanvas(selectedObject);
+        updateAllVisuals(selectedObject);
+        addBoundingBoxDimensions(selectedObject);
+      }
+    }
+    
+    selectedObjects.forEach(o=>{
+      updateBoxHelper(o, BOX_COLORS.selected);
+      setHelperVisible(o,true);
+    });
+    
+    if (!isDuplicating) saveState();
+  }
 });
 
 transform.addEventListener("objectChange", ()=>{
@@ -1201,6 +1457,7 @@ const contextMenu = (function(){
 })();
 
 const contextActions = {
+  "Duplicate": () => duplicateSelectedObjects(),
   "Group": () => groupSelectedObjects(),
   "Ungroup": () => ungroupSelectedObject(),
   "Reset Transform": () => selectedObjects.forEach(resetTransform),
@@ -1231,11 +1488,14 @@ document.addEventListener("click", ()=> contextMenu.style.display="none");
 renderer.domElement.addEventListener("contextmenu", e=>{
   e.preventDefault();
   let actions = ["Select All","Deselect All"];
-  if (selectedObjects.length > 1) actions = ["Group","Reset Transform","Drop to Floor","Select All","Deselect All"];
-  else if (selectedObjects.length === 1) {
+  if (selectedObjects.length > 1) {
+    actions = ["Duplicate","Group","Reset Transform","Drop to Floor","Select All","Deselect All"];
+  } else if (selectedObjects.length === 1) {
     const obj = selectedObjects[0];
-    actions = ["Reset Transform","Drop to Floor","Select All","Deselect All"];
-    if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) actions.unshift("Ungroup");
+    actions = ["Duplicate","Reset Transform","Drop to Floor","Select All","Deselect All"];
+    if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
+      actions.splice(1, 0, "Ungroup"); // Insert "Ungroup" after "Duplicate"
+    }
   }
   showContextMenu(e.clientX, e.clientY, actions);
 });
@@ -1250,10 +1510,13 @@ modelList.addEventListener("contextmenu", e=>{
   if (!selectedObjects.includes(obj)) selectFromSidebar(obj, li, e);
 
   let actions = ["Select All","Deselect All"];
-  if (selectedObjects.length > 1) actions = ["Group","Reset Transform","Drop to Floor","Select All","Deselect All"];
-  else if (selectedObjects.length === 1) {
-    actions = ["Reset Transform","Drop to Floor","Select All","Deselect All"];
-    if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) actions.unshift("Ungroup");
+  if (selectedObjects.length > 1) {
+    actions = ["Duplicate","Group","Reset Transform","Drop to Floor","Select All","Deselect All"];
+  } else if (selectedObjects.length === 1) {
+    actions = ["Duplicate","Reset Transform","Drop to Floor","Select All","Deselect All"];
+    if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
+      actions.splice(1, 0, "Ungroup"); // Insert "Ungroup" after "Duplicate"
+    }
   }
   showContextMenu(e.clientX, e.clientY, actions);
 });
