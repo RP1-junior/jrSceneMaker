@@ -578,7 +578,7 @@ function addGroupToList(group, name, parentList = null){
   childrenToShow.forEach(child=>{
     if (child.userData?.isEditorGroup) {
       // This is a nested group - add it recursively
-      addGroupToList(child, child.name || "Group", childList);
+      addGroupToList(child, child.name || "Attached", childList);
     } else {
       // This is a regular model - add it as a child item
       addModelToList(child, child.name || "Model", childList);
@@ -611,7 +611,7 @@ function rebuildGroupSidebar(group) {
     childrenToShow.forEach(child => {
       if (child.userData?.isEditorGroup) {
         // This is a nested group - add it recursively
-        addGroupToList(child, child.name || "Group", childList);
+        addGroupToList(child, child.name || "Attached", childList);
       } else {
         // This is a regular model - add it as a child item
         addModelToList(child, child.name || "Model", childList);
@@ -804,8 +804,8 @@ fileInput.addEventListener("change", e=>{
   });
 });
 
-// ===== Group / Ungroup =====
-// DEPRECATED: Use drag-and-drop grouping instead
+// ===== Attach / Detach =====
+// DEPRECATED: Use drag-and-drop attaching instead
 function groupSelectedObjects(){
   if (selectedObjects.length < 2) return;
   
@@ -817,7 +817,7 @@ function groupSelectedObjects(){
   const group = new THREE.Group();
   group.userData.isSelectable = true;
   group.userData.isEditorGroup = true;
-  group.name = parentObj.name || "Group " + Date.now();
+  group.name = parentObj.name || "Attached " + Date.now();
   
   // Copy parent object's transform to the group
   group.position.copy(parentObj.position);
@@ -875,24 +875,42 @@ function ungroupSelectedObject(){
   if (!(group instanceof THREE.Group)) return;
   if (!group.userData || group.userData.isEditorGroup !== true) return;
   
-  // Hide child bounding boxes before ungrouping
+  // Hide child bounding boxes before detaching
   showChildBoundingBoxes(group, false);
+  
+  // Remember the group's parent (could be scene or another group)
+  const groupParent = group.parent || scene;
+  const wasInParentGroup = groupParent && groupParent !== scene && groupParent.userData?.isEditorGroup;
   
   while (group.children.length > 0) {
     const child = group.children[0];
-    scene.attach(child);
+    
+    // Move child to the group's parent (preserving world transform)
+    if (groupParent === scene) {
+      scene.attach(child);
+    } else {
+      groupParent.attach(child);
+    }
+    
     createBoxHelperFor(child);
-    // Hide the child's bounding box after ungrouping
+    // Hide the child's bounding box after detaching
     setHelperVisible(child, false);
+    
     // Restore original sidebar representation and label
     if (child.userData?.originalName) child.name = child.userData.originalName;
     const listType = child.userData?.originalListType || child.userData?.listType || (child instanceof THREE.Group ? "group" : "model");
-    if (listType === "group") addGroupToList(child, child.name || "Group");
-    else addModelToList(child, child.name || "Model");
+    
+    // Sidebar will be rebuilt below if we're in a parent group
+    // Otherwise add to root of sidebar
+    if (!wasInParentGroup) {
+      if (listType === "group") addGroupToList(child, child.name || "Attached");
+      else addModelToList(child, child.name || "Model");
+    }
+    
     delete child.userData?.originalListType;
     delete child.userData?.originalName;
     
-    // Update visuals without clamping to preserve world positions during ungrouping
+    // Update visuals without clamping to preserve world positions during detaching
     updateModelProperties(child);
     updatePropertiesPanel(child);
     updateBoxHelper(child);
@@ -902,8 +920,20 @@ function ungroupSelectedObject(){
       updateChildBoundingBoxes(child);
     }
   }
+  
+  // Clean up the group
   cleanupObject(group);
-  scene.remove(group);
+  if (group.parent) {
+    group.parent.remove(group);
+  } else {
+    scene.remove(group);
+  }
+  
+  // If the group was inside another group, rebuild that parent's sidebar
+  if (wasInParentGroup) {
+    rebuildGroupSidebar(groupParent);
+  }
+  
   selectedObjects = [];
   selectedObject = null;
   transform.detach();
@@ -946,7 +976,7 @@ function cleanupEmptyParentGroups(parentGroup) {
                       (parentObject instanceof THREE.Group && parentObject.userData?.isEditorGroup ? "group" : "model");
       
       if (listType === "group") {
-        addGroupToList(parentObject, parentObject.name || "Group");
+        addGroupToList(parentObject, parentObject.name || "Attached");
       } else {
         addModelToList(parentObject, parentObject.name || "Model");
       }
@@ -975,7 +1005,7 @@ function cleanupEmptyParentGroups(parentGroup) {
   }
 }
 
-// ===== Drag and Drop Grouping =====
+// ===== Drag and Drop Attaching =====
 function handleDragStart(e) {
   const li = e.target.closest('li');
   if (!li) return;
@@ -1114,6 +1144,15 @@ function isValidDropTarget(draggedObj, targetObj) {
       draggedObj.parent === targetObj.parent && 
       draggedObj.parent.userData?.isEditorGroup) return false;
   
+  // Restrict: If dragged object is a child in a group, only allow dropping within its own parent group
+  if (draggedObj.parent && draggedObj.parent.userData?.isEditorGroup) {
+    const draggedParent = draggedObj.parent;
+    // Only allow dropping onto siblings or the parent group itself
+    if (targetObj.parent !== draggedParent && targetObj !== draggedParent) {
+      return false;
+    }
+  }
+  
   // Groups can be dropped onto other groups (to add as children)
   // or onto regular objects (to create nested groups)
   // No additional restrictions needed for nested groups
@@ -1141,7 +1180,7 @@ function createGroupFromDragDrop(draggedObj, targetObj) {
   const group = new THREE.Group();
   group.userData.isSelectable = true;
   group.userData.isEditorGroup = true;
-  group.name = targetObj.name || "Group " + Date.now();
+  group.name = targetObj.name || "Attached " + Date.now();
   
   // Copy target object's transform to the group
   group.position.copy(targetObj.position);
@@ -1330,7 +1369,7 @@ function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
   const group = new THREE.Group();
   group.userData.isSelectable = true;
   group.userData.isEditorGroup = true;
-  group.name = targetObj.name || "Group " + Date.now();
+  group.name = targetObj.name || "Attached " + Date.now();
   
   // Copy target object's transform to the group
   group.position.copy(targetObj.position);
@@ -1418,7 +1457,7 @@ function duplicateObject(obj, offset = new THREE.Vector3(1, 0, 1)) {
     duplicate.scale.copy(obj.scale);
     
     // Generate unique name
-    duplicate.name = generateUniqueName(obj.name || "Group");
+    duplicate.name = generateUniqueName(obj.name || "Attached");
     
     // Copy source reference from the first child (parent object)
     if (obj.children[0]?.userData?.sourceRef) {
@@ -1961,7 +2000,7 @@ const contextMenu = (function(){
 
 const contextActions = {
   "Duplicate": () => duplicateSelectedObjects(),
-  "Ungroup": () => ungroupSelectedObject(),
+  "Detach": () => ungroupSelectedObject(),
   "Reset Transform": () => selectedObjects.forEach(resetTransform),
   "Drop to Floor": () => selectedObjects.forEach(dropToFloor),
   "Select All": () => selectAllSidebar(),
@@ -1992,11 +2031,11 @@ renderer.domElement.addEventListener("contextmenu", e=>{
   let actions = ["Select All","Deselect All"];
   if (selectedObjects.length > 0) {
     actions = ["Duplicate","Reset Transform","Drop to Floor","Select All","Deselect All"];
-    // Only show Ungroup for single selected groups
+    // Only show Detach for single selected groups
     if (selectedObjects.length === 1) {
       const obj = selectedObjects[0];
       if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
-        actions.splice(1, 0, "Ungroup"); // Insert "Ungroup" after "Duplicate"
+        actions.splice(1, 0, "Detach"); // Insert "Detach" after "Duplicate"
       }
     }
   }
@@ -2015,9 +2054,9 @@ modelList.addEventListener("contextmenu", e=>{
   let actions = ["Select All","Deselect All"];
   if (selectedObjects.length > 0) {
     actions = ["Duplicate","Reset Transform","Drop to Floor","Select All","Deselect All"];
-    // Only show Ungroup for single selected groups
+    // Only show Detach for single selected groups
     if (selectedObjects.length === 1 && (obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
-      actions.splice(1, 0, "Ungroup"); // Insert "Ungroup" after "Duplicate"
+      actions.splice(1, 0, "Detach"); // Insert "Detach" after "Duplicate"
     }
   }
   showContextMenu(e.clientX, e.clientY, actions);
