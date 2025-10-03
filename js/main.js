@@ -210,9 +210,18 @@ function updateModelProperties(model){
   if(!model) return;
   const box = getBox(model);
   const size = box.getSize(new THREE.Vector3());
+  
+  // Get world position for accurate meter measurements
+  const worldPosition = new THREE.Vector3();
+  model.getWorldPosition(worldPosition);
+  
+  // Get world scale
+  const worldScale = new THREE.Vector3();
+  model.getWorldScale(worldScale);
+  
   model.userData.properties = {
-    pos: model.position.clone(),
-    scl: model.scale.clone(),
+    pos: worldPosition,
+    scl: worldScale,
     size: size.clone()
   };
 }
@@ -2117,7 +2126,19 @@ document.getElementById("exportJson").onclick = ()=>{
     if (!obj.userData?.isSelectable) return null;
     const box = new THREE.Box3().setFromObject(obj);
     const size = box.getSize(new THREE.Vector3());
-    const q = obj.quaternion;
+    
+    // Get world position for accurate meter measurements
+    const worldPosition = new THREE.Vector3();
+    obj.getWorldPosition(worldPosition);
+    
+    // Get world quaternion for accurate rotation
+    const worldQuaternion = new THREE.Quaternion();
+    obj.getWorldQuaternion(worldQuaternion);
+    
+    // Get world scale
+    const worldScale = new THREE.Vector3();
+    obj.getWorldScale(worldScale);
+    
     const rawName = (obj.name && obj.name.length) ? obj.name :
       (obj.userData.listItem ? obj.userData.listItem.textContent : "FILE");
     const baseName = rawName.replace(/\.[^/.]+$/, "");
@@ -2131,9 +2152,9 @@ document.getElementById("exportJson").onclick = ()=>{
           : (sourceRef?.reference || (baseName + ".glb"))
       },
       pTransform: {
-        aPosition: [obj.position.x, obj.position.y, obj.position.z],
-        aRotation: [q.x, q.y, q.z, q.w],
-        aScale: [obj.scale.x, obj.scale.y, obj.scale.z]
+        aPosition: [worldPosition.x, worldPosition.y, worldPosition.z],
+        aRotation: [worldQuaternion.x, worldQuaternion.y, worldQuaternion.z, worldQuaternion.w],
+        aScale: [worldScale.x, worldScale.y, worldScale.z]
       },
       aBound: [size.x, size.y, size.z],
       aChildren: []
