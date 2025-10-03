@@ -1287,14 +1287,19 @@ function isValidDropTarget(draggedObj, targetObj) {
   // Prevent dropping a parent group onto its own child
   if (isDescendantOf(targetObj, draggedObj)) return false;
 
+  // Prevent dropping a child object onto its parent group
+  if (draggedObj.parent && draggedObj.parent.userData?.isEditorGroup && targetObj === draggedObj.parent) {
+    return false;
+  }
+
   // Restrict: If dragged object is a child in a group, only allow dropping within its own parent group
   // This allows nesting child elements within the same group
   if (draggedObj.parent && draggedObj.parent.userData?.isEditorGroup) {
     const draggedParent = draggedObj.parent;
     // Allow dropping onto:
     // 1. Siblings within the same parent group (for nesting)
-    // 2. The parent group itself (to reorganize)
-    if (targetObj.parent !== draggedParent && targetObj !== draggedParent) {
+    // Note: Dropping onto the parent group itself is now prevented above
+    if (targetObj.parent !== draggedParent) {
       return false;
     }
   }
