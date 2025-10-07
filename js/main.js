@@ -49,6 +49,13 @@ grid.userData.isSelectable = false;
 grid.raycast = () => {};
 scene.add(grid);
 
+// Create Object Root as parent for all imported models
+let canvasRoot = new THREE.Group();
+canvasRoot.name = "Object Root";
+canvasRoot.userData.isSelectable = true;
+canvasRoot.userData.isCanvasRoot = true;
+scene.add(canvasRoot);
+
 let ruler = null;
 let humanGuide = null;
 
@@ -73,6 +80,10 @@ const btnResetCamera = document.getElementById("resetCamera");
 
 let modelCounter = 1;
 
+// Initialize canvas root in sidebar
+addCanvasRootToList();
+createBoxHelperFor(canvasRoot);
+
 let loadedFont = null;
 const fontLoader = new THREE.FontLoader();
 fontLoader.load('https://threejs.org/examples/fonts/helvetiker_regular.typeface.json', font => {
@@ -85,6 +96,33 @@ fontLoader.load('https://threejs.org/examples/fonts/helvetiker_regular.typeface.
 
 // ===== Utilities =====
 function getBox(obj){ return new THREE.Box3().setFromObject(obj); }
+
+function getTriangleCount(obj){
+  let triangleCount = 0;
+  
+  // Special handling for Object Root - show combined count of all children
+  if (obj.userData?.isCanvasRoot) {
+    obj.children.forEach(child => {
+      triangleCount += getTriangleCount(child);
+    });
+    return triangleCount;
+  }
+  
+  obj.traverse((child) => {
+    if (child.isMesh && child.geometry) {
+      const geometry = child.geometry;
+      if (geometry.index) {
+        // Indexed geometry
+        triangleCount += geometry.index.count / 3;
+      } else {
+        // Non-indexed geometry
+        triangleCount += geometry.attributes.position.count / 3;
+      }
+    }
+  });
+  
+  return Math.floor(triangleCount);
+}
 
 function updateAllVisuals(obj){
   if(!obj) return;
@@ -208,6 +246,25 @@ function findTopLevelGroup(obj) {
 
 function updateModelProperties(model){
   if(!model) return;
+  
+  // Special handling for Object Root - use canvas dimensions
+  if (model.userData?.isCanvasRoot) {
+    const canvasSize = new THREE.Vector3(groundSize, groundSize, groundSize);
+    const worldPosition = new THREE.Vector3(0, groundSize / 2, 0); // Canvas center
+    const worldScale = new THREE.Vector3(1, 1, 1); // No scaling for canvas
+
+    // Calculate triangle count
+    const triangleCount = getTriangleCount(model);
+
+    model.userData.properties = {
+      pos: worldPosition,
+      scl: worldScale,
+      size: canvasSize.clone(),
+      triangles: triangleCount
+    };
+    return;
+  }
+  
   const box = getBox(model);
   const size = box.getSize(new THREE.Vector3());
 
@@ -219,10 +276,14 @@ function updateModelProperties(model){
   const worldScale = new THREE.Vector3();
   model.getWorldScale(worldScale);
 
+  // Calculate triangle count
+  const triangleCount = getTriangleCount(model);
+
   model.userData.properties = {
     pos: worldPosition,
     scl: worldScale,
-    size: size.clone()
+    size: size.clone(),
+    triangles: triangleCount
   };
 }
 
@@ -235,7 +296,8 @@ function updatePropertiesPanel(model){
   propertiesPanel.textContent =
     `Position: (${p.pos.x.toFixed(2)}, ${p.pos.y.toFixed(2)}, ${p.pos.z.toFixed(2)})\n`+
     `Scale: (${p.scl.x.toFixed(2)}, ${p.scl.y.toFixed(2)}, ${p.scl.z.toFixed(2)})\n`+
-    `Bounds: (${p.size.x.toFixed(2)}, ${p.size.y.toFixed(2)}, ${p.size.z.toFixed(2)})`;
+    `Bounds: (${p.size.x.toFixed(2)}, ${p.size.y.toFixed(2)}, ${p.size.z.toFixed(2)})\n`+
+    `Triangles: ${p.triangles.toLocaleString()}`;
 }
 
 function updateTransformButtonStates(){
@@ -254,6 +316,18 @@ function updateTransformButtonStates(){
     }
   });
 
+  // Handle delete button - disable if only Object Root is selected
+  const deleteAllowed = selectedObjects.length > 0 && !(selectedObjects.length === 1 && selectedObjects[0].userData?.isCanvasRoot);
+  if (deleteAllowed) {
+    btnDelete.disabled = false;
+    btnDelete.style.opacity = "1";
+    btnDelete.style.cursor = "pointer";
+  } else {
+    btnDelete.disabled = true;
+    btnDelete.style.opacity = "0.5";
+    btnDelete.style.cursor = "not-allowed";
+  }
+
   // Detach transform gizmo if editing is not allowed
   if (!editingAllowed) {
     transform.detach();
@@ -264,18 +338,70 @@ function updateTransformButtonStates(){
 }
 
 function createBoxHelperFor(model){
-  const helper = new THREE.BoxHelper(model, BOX_COLORS.selected);
-  helper.material.transparent = true;
-  helper.material.opacity = 0.9;
+  if (model.userData?.isCanvasRoot) {
+    // Create special canvas bounding box
+    createCanvasBoxHelper(model);
+  } else {
+    const helper = new THREE.BoxHelper(model, BOX_COLORS.selected);
+    helper.material.transparent = true;
+    helper.material.opacity = 0.9;
+    helper.visible = false;
+    model.userData.boxHelper = helper;
+    scene.add(helper);
+  }
+}
+
+function createCanvasBoxHelper(canvasRoot){
+  // Create a bounding box that represents the canvas size from surface up
+  const halfSize = groundSize / 2;
+  const height = groundSize; // Canvas height from surface up
+  
+  const geometry = new THREE.BoxGeometry(groundSize, height, groundSize);
+  const edges = new THREE.EdgesGeometry(geometry);
+  const material = new THREE.LineBasicMaterial({ 
+    color: BOX_COLORS.selected,
+    transparent: true,
+    opacity: 0.9
+  });
+  
+  const helper = new THREE.LineSegments(edges, material);
+  helper.position.set(0, height / 2, 0); // Position from surface up
   helper.visible = false;
-  model.userData.boxHelper = helper;
+  
+  canvasRoot.userData.boxHelper = helper;
   scene.add(helper);
 }
 
 function updateBoxHelper(model, color=null){
   if (!model?.userData.boxHelper) return;
-  model.userData.boxHelper.update();
-  if (color) model.userData.boxHelper.material.color.setHex(color);
+  
+  if (model.userData?.isCanvasRoot) {
+    // For canvas root, update the canvas box helper size
+    updateCanvasBoxHelper(model, color);
+  } else {
+    model.userData.boxHelper.update();
+    if (color) model.userData.boxHelper.material.color.setHex(color);
+  }
+}
+
+function updateCanvasBoxHelper(canvasRoot, color=null){
+  if (!canvasRoot?.userData.boxHelper) return;
+  
+  // Update the canvas box helper size based on current ground size
+  const halfSize = groundSize / 2;
+  const height = groundSize;
+  
+  // Update geometry
+  const geometry = new THREE.BoxGeometry(groundSize, height, groundSize);
+  const edges = new THREE.EdgesGeometry(geometry);
+  canvasRoot.userData.boxHelper.geometry.dispose();
+  canvasRoot.userData.boxHelper.geometry = edges;
+  
+  // Update position
+  canvasRoot.userData.boxHelper.position.set(0, height / 2, 0);
+  
+  // Update color if provided
+  if (color) canvasRoot.userData.boxHelper.material.color.setHex(color);
 }
 
 function setHelperVisible(model, visible){
@@ -337,6 +463,30 @@ function updateChildBoundingBoxes(group, recursive = true){
     // Recursively handle nested groups
     if (recursive && child.userData?.isEditorGroup) {
       updateChildBoundingBoxes(child, recursive);
+    }
+  });
+}
+
+function showObjectRootChildrenBoundingBoxes(objectRoot, visible, color = 0x666666, opacity = 0.3){
+  if (!objectRoot || !objectRoot.userData?.isCanvasRoot) return;
+
+  objectRoot.children.forEach(child => {
+    // Ensure child has a box helper
+    if (!child.userData.boxHelper) {
+      createBoxHelperFor(child);
+    }
+
+    if (visible) {
+      child.userData.boxHelper.visible = true;
+      child.userData.boxHelper.material.color.setHex(color);
+      child.userData.boxHelper.material.opacity = opacity;
+    } else {
+      child.userData.boxHelper.visible = false;
+    }
+
+    // Recursively handle nested groups
+    if (child.userData?.isEditorGroup) {
+      showChildBoundingBoxes(child, visible, color, true);
     }
   });
 }
@@ -405,6 +555,9 @@ function isEditingAllowed(){
   if (selectedObjects.length === 1) {
     const obj = selectedObjects[0];
 
+    // Prevent editing canvas root
+    if (obj.userData?.isCanvasRoot) return false;
+
     // If it's a child object in a group, only allow editing if selected from sidebar
     if (isChildObjectInGroup(obj)) {
       return isChildObjectSelectedFromSidebar(obj);
@@ -459,6 +612,10 @@ function selectObject(obj, additive=false, toggle=false){
       if (o.userData?.isEditorGroup) {
         showChildBoundingBoxes(o, false);
       }
+      // Hide Object Root children bounding boxes
+      if (o.userData?.isCanvasRoot) {
+        showObjectRootChildrenBoundingBoxes(o, false);
+      }
       if (o.userData.dimGroup) scene.remove(o.userData.dimGroup);
     });
     selectedObjects = [];
@@ -476,6 +633,10 @@ function selectObject(obj, additive=false, toggle=false){
     // Hide child bounding boxes if object is a group
     if (obj.userData?.isEditorGroup) {
       showChildBoundingBoxes(obj, false);
+    }
+    // Hide Object Root children bounding boxes
+    if (obj.userData?.isCanvasRoot) {
+      showObjectRootChildrenBoundingBoxes(obj, false);
     }
     updatePropertiesPanel(selectedObjects[selectedObjects.length-1] || null);
     updateTransformButtonStates();
@@ -511,6 +672,11 @@ function selectObject(obj, additive=false, toggle=false){
     showChildBoundingBoxes(obj, true, 0x888888); // Gray color for children
   }
 
+  // If this is Object Root, show all children bounding boxes lightly
+  if (obj.userData?.isCanvasRoot) {
+    showObjectRootChildrenBoundingBoxes(obj, true);
+  }
+
   addBoundingBoxDimensions(obj);
   updateModelProperties(obj);
   updatePropertiesPanel(obj);
@@ -544,6 +710,10 @@ function createSidebarItem(obj, name, isGroup=false, parentList=null){
     caret.title = "Toggle children";
     caret.addEventListener("click", e=>{
       e.stopPropagation();
+      // Prevent toggling Object Root
+      if (obj.userData?.isCanvasRoot) {
+        return; // Object Root should always stay expanded
+      }
       setGroupExpanded(li, !(caret.classList.contains("expanded")));
     });
     li.appendChild(caret);
@@ -554,7 +724,15 @@ function createSidebarItem(obj, name, isGroup=false, parentList=null){
   li.onclick = e => selectFromSidebar(obj, li, e);
   li.ondblclick = e => {
     if (e.target === label) makeLabelEditable(label, obj);
-    else { selectFromSidebar(obj, li, e); frameCameraOn(obj); }
+    else { 
+      selectFromSidebar(obj, li, e); 
+      // Special handling for Object Root - reset camera to canvas view
+      if (obj.userData?.isCanvasRoot) {
+        resetCamera();
+      } else {
+        frameCameraOn(obj); 
+      }
+    }
   };
 
   // Drag and drop event handlers
@@ -578,7 +756,13 @@ function createSidebarItem(obj, name, isGroup=false, parentList=null){
 
 function addGroupToList(group, name, parentList = null){
   const targetList = parentList || modelList;
-  createSidebarItem(group, name, true, targetList);
+  // If no parent list specified, add to canvas root's child list
+  if (!parentList) {
+    const canvasChildList = canvasRoot.userData.listItem.nextSibling;
+    createSidebarItem(group, name, true, canvasChildList);
+  } else {
+    createSidebarItem(group, name, true, targetList);
+  }
   group.userData.listType = "group";
   const childList = group.userData.listItem.nextSibling;
 
@@ -595,9 +779,33 @@ function addGroupToList(group, name, parentList = null){
   });
 }
 
+function addCanvasRootToList(){
+  createSidebarItem(canvasRoot, canvasRoot.name, true, modelList);
+  canvasRoot.userData.listType = "canvas";
+  const childList = canvasRoot.userData.listItem.nextSibling;
+  
+  // Object Root should always be expanded and cannot be collapsed
+  const caret = canvasRoot.userData.listItem.querySelector(".caret");
+  if (caret) {
+    caret.classList.add("expanded");
+    caret.style.pointerEvents = "none"; // Disable clicking
+    caret.style.opacity = "0.5"; // Visual indication it's disabled
+  }
+  
+  // Ensure child list is always visible
+  childList.classList.remove("children-collapsed");
+  childList.style.display = "block";
+}
+
 function addModelToList(model, name, parentList = null){
   const targetList = parentList || modelList;
-  createSidebarItem(model, name, false, targetList);
+  // If no parent list specified, add to canvas root's child list
+  if (!parentList) {
+    const canvasChildList = canvasRoot.userData.listItem.nextSibling;
+    createSidebarItem(model, name, false, canvasChildList);
+  } else {
+    createSidebarItem(model, name, false, targetList);
+  }
   model.userData.listType = "model";
 }
 
@@ -644,6 +852,17 @@ function ensureChildList(li){
 function setGroupExpanded(li, expanded){
   const caret = li.querySelector(".caret");
   const childList = ensureChildList(li);
+  
+  // Prevent collapsing Object Root
+  const obj = findObjectByListItem(li);
+  if (obj && obj.userData?.isCanvasRoot) {
+    // Object Root should always be expanded
+    caret?.classList.add("expanded");
+    childList.classList.remove("children-collapsed");
+    childList.style.display = "block";
+    return;
+  }
+  
   if (expanded) {
     caret?.classList.add("expanded");
     childList.classList.remove("children-collapsed");
@@ -802,7 +1021,7 @@ fileInput.addEventListener("change", e=>{
 
     // Enforce maximum height relative to human guide
     fitModelToMaxHeight(model, HUMAN_HEIGHT);
-    scene.add(model);
+    canvasRoot.add(model);
 
     addModelToList(model, model.name);
     storeInitialTransform(model);
@@ -869,7 +1088,7 @@ function groupSelectedObjects(){
     }
   });
 
-  scene.add(group);
+  canvasRoot.add(group);
   createBoxHelperFor(group);
   createParentBoxHelperFor(group);
   addGroupToList(group, group.name);
@@ -902,7 +1121,7 @@ function ungroupSelectedObject(){
 
     // Move child to the group's parent (preserving world transform)
     if (groupParent === scene) {
-      scene.attach(child);
+      canvasRoot.attach(child);
     } else {
       groupParent.attach(child);
     }
@@ -980,7 +1199,7 @@ function detachFromGroup(obj, skipSelection = false){
   const wasInParentGroup = grandParent && grandParent !== scene && grandParent.userData?.isEditorGroup;
   
   if (grandParent === scene) {
-    scene.attach(obj);
+    canvasRoot.attach(obj);
   } else {
     grandParent.attach(obj);
   }
@@ -1292,6 +1511,11 @@ function isValidDropTarget(draggedObj, targetObj) {
     return false;
   }
 
+  // Prevent dropping Object Root children onto Object Root itself
+  if (draggedObj.parent && draggedObj.parent.userData?.isCanvasRoot && targetObj.userData?.isCanvasRoot) {
+    return false;
+  }
+
   // Restrict: If dragged object is a child in a group, only allow dropping within its own parent group
   // This allows nesting child elements within the same group
   if (draggedObj.parent && draggedObj.parent.userData?.isEditorGroup) {
@@ -1364,12 +1588,12 @@ function createGroupFromDragDrop(draggedObj, targetObj) {
     delete targetObj.userData.listItem;
   }
 
-  // Add group to scene or parent FIRST (before adding dragged object)
+  // Add group to canvas root or parent FIRST (before adding dragged object)
   // This ensures the group has a valid world matrix for transform calculations
   if (wasInGroup) {
     targetParent.add(group);
   } else {
-    scene.add(group);
+    canvasRoot.add(group);
   }
 
   // Now add dragged object to the group (world transform will be preserved correctly)
@@ -1415,7 +1639,7 @@ function addObjectToExistingGroup(obj, group) {
       cleanupEmptyParentGroups(objParent);
     }
   } else {
-    scene.remove(obj);
+    canvasRoot.remove(obj);
   }
 
   // Add to the target group (this will handle sidebar cleanup and world transform preservation)
@@ -1553,12 +1777,12 @@ function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
     delete targetObj.userData.listItem;
   }
 
-  // Add group to scene or parent FIRST (before adding dragged objects)
+  // Add group to canvas root or parent FIRST (before adding dragged objects)
   // This ensures the group has a valid world matrix for transform calculations
   if (wasInGroup) {
     targetParent.add(group);
   } else {
-    scene.add(group);
+    canvasRoot.add(group);
   }
 
   // Now add all dragged objects to the group (world transforms will be preserved correctly)
@@ -1592,7 +1816,7 @@ function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
 
 // ===== Duplication =====
 function duplicateObject(obj, offset = new THREE.Vector3(1, 0, 1)) {
-  if (!obj || !obj.userData?.isSelectable) return null;
+  if (!obj || !obj.userData?.isSelectable || obj.userData?.isCanvasRoot) return null;
 
   let duplicate;
 
@@ -1690,7 +1914,11 @@ function duplicateSelectedObjects() {
   const duplicates = [];
   const offset = new THREE.Vector3(1, 0, 1); // Default offset for non-gizmo duplication
 
-  selectedObjects.forEach(obj => {
+  // Filter out canvas root from duplication
+  const objectsToDuplicate = selectedObjects.filter(obj => !obj.userData?.isCanvasRoot);
+  if (objectsToDuplicate.length === 0) return;
+
+  objectsToDuplicate.forEach(obj => {
     const duplicate = duplicateObject(obj, offset);
     if (duplicate) {
       // Add to scene (or parent group if original was in a group)
@@ -1701,8 +1929,8 @@ function duplicateSelectedObjects() {
         // Update the parent group's sidebar
         rebuildGroupSidebar(originalParent);
       } else {
-        // Add to scene
-        scene.add(duplicate);
+        // Add to canvas root
+        canvasRoot.add(duplicate);
         // Add to sidebar
         if (duplicate.userData?.isEditorGroup) {
           addGroupToList(duplicate, duplicate.name);
@@ -1755,7 +1983,7 @@ function duplicateSelectedObjects() {
 
 // ===== Delete =====
 function deleteObject(obj){
-  if(!obj) return;
+  if(!obj || obj.userData?.isCanvasRoot) return;
   if(transform.object===obj) transform.detach();
 
   // Remember the parent group before deletion
@@ -1826,6 +2054,17 @@ canvasSizeInput.addEventListener("change", e=>{
   }
   orbit.maxDistance = groundSize * 1.5;
   selectedObjects.forEach(o=>updateAllVisuals(o));
+  
+  // Update canvas root box helper if it exists
+  if (canvasRoot.userData.boxHelper) {
+    updateCanvasBoxHelper(canvasRoot);
+  }
+  
+  // Update Object Root properties to reflect new canvas size
+  updateModelProperties(canvasRoot);
+  if (selectedObjects.includes(canvasRoot)) {
+    updatePropertiesPanel(canvasRoot);
+  }
 });
 
 snapCheckbox.addEventListener("change", e=>{
@@ -1843,7 +2082,7 @@ renderer.domElement.addEventListener("mousemove", e=>{
   );
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(scene.children, true);
+  const hits = raycaster.intersectObjects([canvasRoot], true);
   let obj = null;
   if (hits.length>0){
     obj = hits[0].object;
@@ -1866,7 +2105,7 @@ renderer.domElement.addEventListener("click", e=>{
   );
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(scene.children, true);
+  const hits = raycaster.intersectObjects([canvasRoot], true);
   if (hits.length>0){
     let obj = hits[0].object;
     while (obj.parent && !obj.userData.isSelectable) obj = obj.parent;
@@ -1887,7 +2126,7 @@ renderer.domElement.addEventListener("dblclick", e=>{
   );
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(scene.children, true);
+  const hits = raycaster.intersectObjects([canvasRoot], true);
   let target = null;
   if (hits.length>0){
     let obj = hits[0].object;
@@ -1931,8 +2170,15 @@ window.addEventListener("keydown", e=>{
       break;
     }
     case "delete":
-      if(selectedObjects.length) [...selectedObjects].forEach(deleteObject);
-      else if (selectedObject) deleteObject(selectedObject);
+      // Filter out canvas root from deletion
+      const objectsToDelete = selectedObjects.filter(obj => !obj.userData?.isCanvasRoot);
+      if(objectsToDelete.length) [...objectsToDelete].forEach(deleteObject);
+      else if (selectedObject && !selectedObject.userData?.isCanvasRoot) deleteObject(selectedObject);
+      
+      // If only Object Root is selected, do nothing
+      if (selectedObjects.length === 1 && selectedObjects[0].userData?.isCanvasRoot) {
+        return;
+      }
       break;
     case "d":
       if ((e.ctrlKey || e.metaKey) && !inForm) {
@@ -1966,8 +2212,15 @@ btnScale.onclick = () => {
   if (isEditingAllowed()) transform.setMode("scale");
 };
 btnDelete.onclick = () => {
-  if(selectedObjects.length) [...selectedObjects].forEach(deleteObject);
-  else if (selectedObject) deleteObject(selectedObject);
+  // Filter out canvas root from deletion
+  const objectsToDelete = selectedObjects.filter(obj => !obj.userData?.isCanvasRoot);
+  if(objectsToDelete.length) [...objectsToDelete].forEach(deleteObject);
+  else if (selectedObject && !selectedObject.userData?.isCanvasRoot) deleteObject(selectedObject);
+  
+  // If only Object Root is selected, do nothing
+  if (selectedObjects.length === 1 && selectedObjects[0].userData?.isCanvasRoot) {
+    return;
+  }
 };
 btnUndo.onclick = () => undo();
 btnResetCamera.onclick = () => resetCamera();
@@ -1987,7 +2240,7 @@ transform.addEventListener("dragging-changed", e=>{
 
   if (e.value) {
     // Starting to drag
-    if (isAltPressed && selectedObject && !isDuplicating) {
+    if (isAltPressed && selectedObject && !isDuplicating && !selectedObject.userData?.isCanvasRoot) {
       // Create duplicate and switch to it
       isDuplicating = true;
       originalObject = selectedObject;
@@ -2002,8 +2255,8 @@ transform.addEventListener("dragging-changed", e=>{
           // Update the parent group's sidebar
           rebuildGroupSidebar(originalParent);
         } else {
-          // Add to scene
-          scene.add(duplicate);
+          // Add to canvas root
+          canvasRoot.add(duplicate);
           // Add to sidebar
           if (duplicate.userData?.isEditorGroup) {
             addGroupToList(duplicate, duplicate.name);
@@ -2181,11 +2434,18 @@ document.addEventListener("click", ()=> contextMenu.style.display="none");
 renderer.domElement.addEventListener("contextmenu", e=>{
   e.preventDefault();
   let actions = ["Select All","Deselect All"];
-  if (selectedObjects.length > 0) {
+  
+  // Filter out canvas root from selected objects for context menu
+  const nonCanvasObjects = selectedObjects.filter(obj => !obj.userData?.isCanvasRoot);
+  
+  // If only Object Root is selected, show limited options
+  if (selectedObjects.length === 1 && selectedObjects[0].userData?.isCanvasRoot) {
+    actions = ["Select All","Deselect All"];
+  } else if (nonCanvasObjects.length > 0) {
     actions = ["Duplicate","Reset Transform","Drop to Floor","Select All","Deselect All"];
 
-    if (selectedObjects.length === 1) {
-      const obj = selectedObjects[0];
+    if (nonCanvasObjects.length === 1) {
+      const obj = nonCanvasObjects[0];
       // If it's a parent group, show "Detach" to dissolve the entire group
       if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
         actions.splice(1, 0, "Dissolve Group"); // Insert "Detach" after "Duplicate"
@@ -2202,7 +2462,7 @@ renderer.domElement.addEventListener("contextmenu", e=>{
       }
     } else {
       // Multiple objects selected - check if any are children in groups with enough children
-      const hasDetachableChildren = selectedObjects.some(obj => {
+      const hasDetachableChildren = nonCanvasObjects.some(obj => {
         if (!isChildObjectInGroup(obj)) return false;
         const parentGroup = obj.parent;
         return parentGroup.children.length >= 3;
@@ -2225,10 +2485,18 @@ modelList.addEventListener("contextmenu", e=>{
   if (!selectedObjects.includes(obj)) selectFromSidebar(obj, li, e);
 
   let actions = ["Select All","Deselect All"];
-  if (selectedObjects.length > 0) {
+  
+  // Filter out canvas root from selected objects for context menu
+  const nonCanvasObjects = selectedObjects.filter(obj => !obj.userData?.isCanvasRoot);
+  
+  // If only Object Root is selected, show limited options
+  if (selectedObjects.length === 1 && selectedObjects[0].userData?.isCanvasRoot) {
+    actions = ["Select All","Deselect All"];
+  } else if (nonCanvasObjects.length > 0) {
     actions = ["Duplicate","Reset Transform","Drop to Floor","Select All","Deselect All"];
 
-    if (selectedObjects.length === 1) {
+    if (nonCanvasObjects.length === 1) {
+      const obj = nonCanvasObjects[0];
       // If it's a parent group, show "Detach" to dissolve the entire group
       if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
         actions.splice(1, 0, "Dissolve Group"); // Insert "Detach" after "Duplicate"
@@ -2245,7 +2513,7 @@ modelList.addEventListener("contextmenu", e=>{
       }
     } else {
       // Multiple objects selected - check if any are children in groups with enough children
-      const hasDetachableChildren = selectedObjects.some(obj => {
+      const hasDetachableChildren = nonCanvasObjects.some(obj => {
         if (!isChildObjectInGroup(obj)) return false;
         const parentGroup = obj.parent;
         return parentGroup.children.length >= 3;
@@ -2268,17 +2536,25 @@ function findObjectByListItem(li){
 
 function selectAllSidebar(){
   deselectAllSidebar();
-  const topItems = [...modelList.querySelectorAll(":scope > li")];
-  topItems.forEach(li=>{
-    const obj = findObjectByListItem(li);
-    if (obj?.userData.isSelectable){
-      li.classList.add("selected");
+  
+  // Get all selectable objects from canvas root
+  const allObjects = [];
+  canvasRoot.traverse(obj => {
+    if (obj.userData?.isSelectable && obj !== canvasRoot) {
+      allObjects.push(obj);
+    }
+  });
+  
+  allObjects.forEach(obj => {
+    if (obj.userData.listItem) {
+      obj.userData.listItem.classList.add("selected");
       selectedObjects.push(obj);
-      setHelperVisible(obj,true);
+      setHelperVisible(obj, true);
       updateBoxHelper(obj, BOX_COLORS.selected);
       addBoundingBoxDimensions(obj);
     }
   });
+  
   selectedObject = selectedObjects[selectedObjects.length-1] || null;
   if (selectedObject){
     updateModelProperties(selectedObject);
@@ -2298,6 +2574,10 @@ function deselectAllSidebar(){
     // Hide child bounding boxes if object is a group
     if (o.userData?.isEditorGroup) {
       showChildBoundingBoxes(o, false);
+    }
+    // Hide Object Root children bounding boxes
+    if (o.userData?.isCanvasRoot) {
+      showObjectRootChildrenBoundingBoxes(o, false);
     }
     if (o.userData.dimGroup) scene.remove(o.userData.dimGroup);
   });
@@ -2349,29 +2629,43 @@ document.getElementById("exportJson").onclick = ()=>{
       aChildren: []
     };
 
-    if (obj instanceof THREE.Group) {
-      // For editor groups, skip the first child (parent object) and only export other children
-      const childrenToExport = obj.userData?.isEditorGroup === true
-        ? obj.children.slice(1)
-        : obj.children;
+    // Special handling for Object Root - no sReference required
+    if (obj.userData?.isCanvasRoot) {
+      node.pResource = {
+        sName: baseName
+        // No sReference for Object Root
+      };
+    }
 
-      childrenToExport.forEach(child=>{
-        const childNode = buildNode(child);
-        if (childNode) node.aChildren.push(childNode);
-      });
+    if (obj instanceof THREE.Group) {
+      // For Object Root, export all children normally
+      if (obj.userData?.isCanvasRoot) {
+        obj.children.forEach(child=>{
+          const childNode = buildNode(child);
+          if (childNode) node.aChildren.push(childNode);
+        });
+      } else {
+        // For editor groups, skip the first child (parent object) and only export other children
+        const childrenToExport = obj.userData?.isEditorGroup === true
+          ? obj.children.slice(1)
+          : obj.children;
+
+        childrenToExport.forEach(child=>{
+          const childNode = buildNode(child);
+          if (childNode) node.aChildren.push(childNode);
+        });
+      }
     }
 
     return node;
   }
-  const exportData = [];
-  scene.children.forEach(obj=>{
-    const node = buildNode(obj);
-    if (node) exportData.push(node);
-  });
+  // Create Object Root as the parent of all hierarchies
+  const objectRootNode = buildNode(canvasRoot);
+  const exportData = objectRootNode ? [objectRootNode] : [];
   const jsonText = JSON.stringify(exportData, null, 2);
   const blob = new Blob([jsonText], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "index.msf.json"; a.click();
+  a.href = url; a.download = "scene.json"; a.click();
   URL.revokeObjectURL(url);
 };
