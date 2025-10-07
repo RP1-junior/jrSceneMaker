@@ -16,7 +16,6 @@
 <button id="delete">Delete (Del)</button>
 <button id="undo">Undo (Ctrl+Z)</button>
 <button id="resetCamera">Reset Camera</button>
-<button id="exportJson">Export JSON</button>
 <br>
 <label><input type="checkbox" id="snap"> Snap</label>
 <input type="number" id="canvasSize" value="20" min="20" max="100"> Canvas Size<br>
@@ -28,6 +27,15 @@
   <hr>
   <strong>Properties</strong>
   <pre id="properties"></pre>
+</div>
+
+<div id="rightSidebar">
+  <strong>Code Editor</strong>
+  <textarea id="jsonEditor" placeholder="Scene JSON will appear here..."></textarea>
+  <div id="jsonButtons">
+    <button id="applyChanges" style="display: none;">Apply Changes</button>
+    <button id="exportJson">Export JSON</button>
+  </div>
 </div>
 
 <div id="helpOverlay">

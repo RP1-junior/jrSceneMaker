@@ -77,6 +77,9 @@ const btnScale = document.getElementById("scale");
 const btnDelete = document.getElementById("delete");
 const btnUndo = document.getElementById("undo");
 const btnResetCamera = document.getElementById("resetCamera");
+const jsonEditor = document.getElementById("jsonEditor");
+const exportJson = document.getElementById("exportJson");
+const applyChanges = document.getElementById("applyChanges");
 
 let modelCounter = 1;
 
@@ -148,6 +151,9 @@ function updateAllVisuals(obj){
   if(selectedObjects.includes(obj)) {
     addBoundingBoxDimensions(obj);
   }
+
+  // Update JSON editor
+  updateJSONEditorFromScene();
 }
 
 function updateParentGroupBounds(parentGroup) {
@@ -891,6 +897,9 @@ function makeLabelEditable(label, obj){
     newLabel.ondblclick = () => makeLabelEditable(newLabel, obj);
     input.replaceWith(newLabel);
     obj.userData.listItem.firstChild = newLabel;
+    
+    // Update JSON editor when object name changes
+    updateJSONEditorFromScene();
   };
   input.addEventListener("blur", finish);
   input.addEventListener("keydown", e=>{
@@ -1029,6 +1038,7 @@ fileInput.addEventListener("change", e=>{
     updateBoxHelper(model);
     frameCameraOn(model);
     saveState();
+    updateJSONEditorFromScene();
   });
 });
 
@@ -2006,6 +2016,9 @@ function deleteObject(obj){
   if (parentGroup) {
     cleanupEmptyParentGroups(parentGroup);
   }
+
+  // Update JSON editor
+  updateJSONEditorFromScene();
 }
 
 // ===== Camera helpers =====
@@ -2065,6 +2078,9 @@ canvasSizeInput.addEventListener("change", e=>{
   if (selectedObjects.includes(canvasRoot)) {
     updatePropertiesPanel(canvasRoot);
   }
+
+  // Update JSON editor
+  updateJSONEditorFromScene();
 });
 
 snapCheckbox.addEventListener("change", e=>{
@@ -2590,82 +2606,308 @@ function deselectAllSidebar(){
 
 
 // ===== Export JSON (quaternions) =====
-document.getElementById("exportJson").onclick = ()=>{
-  function buildNode(obj){
-    if (!obj.userData?.isSelectable) return null;
-    const box = new THREE.Box3().setFromObject(obj);
-    const size = box.getSize(new THREE.Vector3());
+function buildNode(obj){
+  if (!obj.userData?.isSelectable) return null;
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = box.getSize(new THREE.Vector3());
 
-    // Get world position for accurate meter measurements
-    const worldPosition = new THREE.Vector3();
-    obj.getWorldPosition(worldPosition);
+  // Get world position for accurate meter measurements
+  const worldPosition = new THREE.Vector3();
+  obj.getWorldPosition(worldPosition);
 
-    // Get world quaternion for accurate rotation
-    const worldQuaternion = new THREE.Quaternion();
-    obj.getWorldQuaternion(worldQuaternion);
+  // Get world quaternion for accurate rotation
+  const worldQuaternion = new THREE.Quaternion();
+  obj.getWorldQuaternion(worldQuaternion);
 
-    // Get world scale
-    const worldScale = new THREE.Vector3();
-    obj.getWorldScale(worldScale);
+  // Get world scale
+  const worldScale = new THREE.Vector3();
+  obj.getWorldScale(worldScale);
 
-    const rawName = (obj.name && obj.name.length) ? obj.name :
-      (obj.userData.listItem ? obj.userData.listItem.textContent : "FILE");
-    const baseName = rawName.replace(/\.[^/.]+$/, "");
-    const sourceRef = obj.userData?.sourceRef;
+  const rawName = (obj.name && obj.name.length) ? obj.name :
+    (obj.userData.listItem ? obj.userData.listItem.textContent : "FILE");
+  const baseName = rawName.replace(/\.[^/.]+$/, "");
+  const sourceRef = obj.userData?.sourceRef;
 
-    const node = {
-      pResource: {
-        sName: baseName,
-        sReference: (obj instanceof THREE.Group && obj.userData?.isEditorGroup === true)
-          ? (obj.children[0]?.userData?.sourceRef?.reference || (baseName + ".glb"))
-          : (sourceRef?.reference || (baseName + ".glb"))
-      },
-      pTransform: {
-        aPosition: [worldPosition.x, worldPosition.y, worldPosition.z],
-        aRotation: [worldQuaternion.x, worldQuaternion.y, worldQuaternion.z, worldQuaternion.w],
-        aScale: [worldScale.x, worldScale.y, worldScale.z]
-      },
-      aBound: [size.x, size.y, size.z],
-      aChildren: []
+  const node = {
+    pResource: {
+      sName: obj.name || baseName,
+      sReference: (obj instanceof THREE.Group && obj.userData?.isEditorGroup === true)
+        ? (obj.children[0]?.userData?.sourceRef?.reference || (baseName + ".glb"))
+        : (sourceRef?.reference || (baseName + ".glb"))
+    },
+    pTransform: {
+      aPosition: [worldPosition.x, worldPosition.y, worldPosition.z],
+      aRotation: [worldQuaternion.x, worldQuaternion.y, worldQuaternion.z, worldQuaternion.w],
+      aScale: [worldScale.x, worldScale.y, worldScale.z]
+    },
+    aBound: [size.x, size.y, size.z],
+    aChildren: []
+  };
+
+  // Special handling for Object Root - no sReference required
+  if (obj.userData?.isCanvasRoot) {
+    node.pResource = {
+      sName: baseName
+      // No sReference for Object Root
     };
-
-    // Special handling for Object Root - no sReference required
-    if (obj.userData?.isCanvasRoot) {
-      node.pResource = {
-        sName: baseName
-        // No sReference for Object Root
-      };
-    }
-
-    if (obj instanceof THREE.Group) {
-      // For Object Root, export all children normally
-      if (obj.userData?.isCanvasRoot) {
-        obj.children.forEach(child=>{
-          const childNode = buildNode(child);
-          if (childNode) node.aChildren.push(childNode);
-        });
-      } else {
-        // For editor groups, skip the first child (parent object) and only export other children
-        const childrenToExport = obj.userData?.isEditorGroup === true
-          ? obj.children.slice(1)
-          : obj.children;
-
-        childrenToExport.forEach(child=>{
-          const childNode = buildNode(child);
-          if (childNode) node.aChildren.push(childNode);
-        });
-      }
-    }
-
-    return node;
   }
-  // Create Object Root as the parent of all hierarchies
+
+  if (obj instanceof THREE.Group) {
+    // For Object Root, export all children normally
+    if (obj.userData?.isCanvasRoot) {
+      obj.children.forEach(child=>{
+        const childNode = buildNode(child);
+        if (childNode) node.aChildren.push(childNode);
+      });
+    } else {
+      // For editor groups, skip the first child (parent object) and only export other children
+      const childrenToExport = obj.userData?.isEditorGroup === true
+        ? obj.children.slice(1)
+        : obj.children;
+
+      childrenToExport.forEach(child=>{
+        const childNode = buildNode(child);
+        if (childNode) node.aChildren.push(childNode);
+      });
+    }
+  }
+
+  return node;
+}
+
+function generateSceneJSON() {
   const objectRootNode = buildNode(canvasRoot);
   const exportData = objectRootNode ? [objectRootNode] : [];
-  const jsonText = JSON.stringify(exportData, null, 2);
+  return JSON.stringify(exportData, null, 2);
+}
+
+function updateJSONEditor() {
+  if (jsonEditor) {
+    jsonEditor.value = generateSceneJSON();
+  }
+}
+
+// Export JSON button
+exportJson.onclick = ()=>{
+  const jsonText = generateSceneJSON();
   const blob = new Blob([jsonText], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = "scene.json"; a.click();
   URL.revokeObjectURL(url);
 };
+
+// ===== JSON Editor Sync =====
+let originalJSON = '';
+let hasUnsavedChanges = false;
+
+// Update JSON editor when scene changes
+function updateJSONEditorFromScene() {
+  if (jsonEditor && !hasUnsavedChanges) {
+    originalJSON = generateSceneJSON();
+    jsonEditor.value = originalJSON;
+  }
+}
+
+// Parse JSON and update scene
+function parseJSONAndUpdateScene(jsonText) {
+  try {
+    const data = JSON.parse(jsonText);
+    if (!Array.isArray(data) || data.length === 0) return;
+
+    const rootNode = data[0];
+    if (!rootNode || !rootNode.pResource) return;
+
+    // Create a map of existing objects by name for reference
+    const existingObjects = new Map();
+    canvasRoot.traverse(obj => {
+      if (obj.userData?.isSelectable && obj !== canvasRoot && obj.name) {
+        existingObjects.set(obj.name, obj);
+      }
+    });
+
+    // Update existing objects or create new ones
+    if (rootNode.aChildren && Array.isArray(rootNode.aChildren)) {
+      rootNode.aChildren.forEach(childNode => {
+        updateOrCreateObject(childNode, canvasRoot, existingObjects);
+      });
+    }
+
+    // Remove objects that are no longer in the JSON
+    const jsonObjectNames = new Set();
+    if (rootNode.aChildren) {
+      rootNode.aChildren.forEach(childNode => {
+        collectObjectNames(childNode, jsonObjectNames);
+      });
+    }
+
+    existingObjects.forEach((obj, name) => {
+      if (!jsonObjectNames.has(name)) {
+        cleanupObject(obj);
+        if (obj.parent) obj.parent.remove(obj);
+      }
+    });
+
+    // Update original JSON and hide apply button
+    originalJSON = jsonText;
+    hasUnsavedChanges = false;
+    applyChanges.style.display = 'none';
+  } catch (error) {
+    console.error('Error parsing JSON:', error);
+    alert('Invalid JSON format. Please check your syntax.');
+    // Restore original JSON on error
+    jsonEditor.value = originalJSON;
+  }
+}
+
+function collectObjectNames(node, names) {
+  if (node && node.pResource && node.pResource.sName) {
+    names.add(node.pResource.sName);
+  }
+  if (node.aChildren && Array.isArray(node.aChildren)) {
+    node.aChildren.forEach(childNode => {
+      collectObjectNames(childNode, names);
+    });
+  }
+}
+
+function updateOrCreateObject(node, parent, existingObjects) {
+  if (!node || !node.pResource) return null;
+
+  const objectName = node.pResource.sName || "Imported Object";
+  let obj = existingObjects.get(objectName);
+
+  if (obj) {
+    // Update existing object
+    updateObjectFromNode(obj, node);
+  } else {
+    // Create new object
+    obj = createObjectFromNode(node);
+    if (obj) {
+      parent.add(obj);
+      createBoxHelperFor(obj);
+      addModelToList(obj, obj.name);
+      storeInitialTransform(obj);
+    }
+  }
+
+  // Handle children
+  if (node.aChildren && Array.isArray(node.aChildren)) {
+    node.aChildren.forEach(childNode => {
+      updateOrCreateObject(childNode, obj, existingObjects);
+    });
+  }
+
+  return obj;
+}
+
+function updateObjectFromNode(obj, node) {
+  // Update name if it changed (but preserve the original source reference)
+  if (node.pResource && node.pResource.sName && obj.name !== node.pResource.sName) {
+    obj.name = node.pResource.sName;
+    // Update sidebar label
+    if (obj.userData.listItem) {
+      const label = obj.userData.listItem.querySelector('span');
+      if (label) {
+        label.textContent = obj.name;
+      }
+    }
+  }
+
+  // IMPORTANT: Never update the sourceRef from JSON - it should always remain the original file reference
+  // The sReference in JSON is only used for reference, not for updating the object's sourceRef
+
+  // Update transform
+  if (node.pTransform) {
+    if (node.pTransform.aPosition) {
+      obj.position.set(
+        node.pTransform.aPosition[0],
+        node.pTransform.aPosition[1],
+        node.pTransform.aPosition[2]
+      );
+    }
+    if (node.pTransform.aRotation) {
+      obj.quaternion.set(
+        node.pTransform.aRotation[0],
+        node.pTransform.aRotation[1],
+        node.pTransform.aRotation[2],
+        node.pTransform.aRotation[3]
+      );
+    }
+    if (node.pTransform.aScale) {
+      obj.scale.set(
+        node.pTransform.aScale[0],
+        node.pTransform.aScale[1],
+        node.pTransform.aScale[2]
+      );
+    }
+  }
+
+  // Update properties and visuals
+  updateAllVisuals(obj);
+}
+
+function createObjectFromNode(node) {
+  // Create a placeholder object for now
+  // In a full implementation, you would load the actual GLTF model
+  const geometry = new THREE.BoxGeometry(1, 1, 1);
+  const material = new THREE.MeshBasicMaterial({ color: 0x888888 });
+  const obj = new THREE.Mesh(geometry, material);
+  
+  obj.userData.isSelectable = true;
+  obj.name = node.pResource.sName || "Imported Object";
+
+  // Preserve the original source reference from JSON
+  if (node.pResource && node.pResource.sReference) {
+    obj.userData.sourceRef = {
+      reference: node.pResource.sReference,
+      originalFileName: node.pResource.sReference,
+      baseName: node.pResource.sName || "Imported Object"
+    };
+  }
+
+  // Apply transform
+  if (node.pTransform) {
+    if (node.pTransform.aPosition) {
+      obj.position.set(
+        node.pTransform.aPosition[0],
+        node.pTransform.aPosition[1],
+        node.pTransform.aPosition[2]
+      );
+    }
+    if (node.pTransform.aRotation) {
+      obj.quaternion.set(
+        node.pTransform.aRotation[0],
+        node.pTransform.aRotation[1],
+        node.pTransform.aRotation[2],
+        node.pTransform.aRotation[3]
+      );
+    }
+    if (node.pTransform.aScale) {
+      obj.scale.set(
+        node.pTransform.aScale[0],
+        node.pTransform.aScale[1],
+        node.pTransform.aScale[2]
+      );
+    }
+  }
+
+  return obj;
+}
+
+// JSON editor event listeners
+if (jsonEditor) {
+  // Detect changes in JSON editor
+  jsonEditor.addEventListener('input', () => {
+    hasUnsavedChanges = jsonEditor.value !== originalJSON;
+    applyChanges.style.display = hasUnsavedChanges ? 'block' : 'none';
+  });
+
+  // Apply changes button
+  applyChanges.addEventListener('click', () => {
+    parseJSONAndUpdateScene(jsonEditor.value);
+  });
+
+  // Initial JSON update
+  updateJSONEditorFromScene();
+}
