@@ -1182,6 +1182,7 @@ function ungroupSelectedObject(){
   selectedObject = null;
   transform.detach();
   updatePropertiesPanel(null);
+  updateJSONEditorFromScene();
 }
 
 function detachFromGroup(obj, skipSelection = false){
@@ -1256,6 +1257,7 @@ function detachFromGroup(obj, skipSelection = false){
   if (!skipSelection) {
     selectObject(obj);
     saveState();
+    updateJSONEditorFromScene();
   }
   
   return true;
@@ -1314,6 +1316,7 @@ function detachSelectedFromGroup(){
     updatePropertiesPanel(selectedObject);
     updateTransformButtonStates();
     saveState();
+    updateJSONEditorFromScene();
   }
 }
 
@@ -1631,6 +1634,7 @@ function createGroupFromDragDrop(draggedObj, targetObj) {
   storeInitialTransform(group);
   selectObject(group);
   saveState();
+  updateJSONEditorFromScene();
 }
 
 function addObjectToExistingGroup(obj, group) {
@@ -1674,6 +1678,7 @@ function addObjectToExistingGroup(obj, group) {
   }
 
   saveState();
+  updateJSONEditorFromScene();
 }
 
 function addObjectToGroup(obj, group) {
@@ -1822,6 +1827,7 @@ function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
   storeInitialTransform(group);
   selectObject(group);
   saveState();
+  updateJSONEditorFromScene();
 }
 
 // ===== Duplication =====
@@ -2157,7 +2163,12 @@ renderer.domElement.addEventListener("dblclick", e=>{
 window.addEventListener("keydown", e=>{
   const key = e.key.toLowerCase();
   const inForm = (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
+  const isJSONEditor = e.target === jsonEditor;
   const isHotkey = ["w","e","r","q","f","h","z","delete","d","alt"].includes(key);
+  
+  // Block all hotkeys when JSON editor is focused
+  if (isJSONEditor) return;
+  
   if (inForm && !isHotkey) return;
 
   // Track Alt key for duplication
@@ -3138,6 +3149,11 @@ if (jsonEditor) {
   jsonEditor.addEventListener('input', () => {
     hasUnsavedChanges = jsonEditor.value !== originalJSON;
     applyChanges.style.display = hasUnsavedChanges ? 'block' : 'none';
+  });
+
+  // Focus event - deselect all objects when JSON editor is focused
+  jsonEditor.addEventListener('focus', () => {
+    deselectAllSidebar();
   });
 
   // Apply changes button
