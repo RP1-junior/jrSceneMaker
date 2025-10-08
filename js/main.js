@@ -98,7 +98,20 @@ fontLoader.load('https://threejs.org/examples/fonts/helvetiker_regular.typeface.
 });
 
 // ===== Utilities =====
-function getBox(obj){ return new THREE.Box3().setFromObject(obj); }
+function getBox(obj){ 
+  // Special handling for Object Root - return canvas bounding box
+  if (obj.userData?.isCanvasRoot) {
+    const box = new THREE.Box3();
+    const halfSize = groundSize / 2;
+    const height = groundSize;
+    box.setFromCenterAndSize(
+      new THREE.Vector3(0, height / 2, 0), // Center matches canvas box helper
+      new THREE.Vector3(groundSize, height, groundSize) // Size matches canvas dimensions
+    );
+    return box;
+  }
+  return new THREE.Box3().setFromObject(obj); 
+}
 
 function getTriangleCount(obj){
   let triangleCount = 0;
@@ -256,7 +269,7 @@ function updateModelProperties(model){
   // Special handling for Object Root - use canvas dimensions
   if (model.userData?.isCanvasRoot) {
     const canvasSize = new THREE.Vector3(groundSize, groundSize, groundSize);
-    const worldPosition = new THREE.Vector3(0, groundSize / 2, 0); // Canvas center
+    const worldPosition = new THREE.Vector3(0, groundSize / 2, 0); // Canvas center (matches canvas box helper)
     const worldScale = new THREE.Vector3(1, 1, 1); // No scaling for canvas
     const worldQuaternion = new THREE.Quaternion(0, 0, 0, 1); // Identity quaternion for canvas
 
@@ -2627,7 +2640,7 @@ function deselectAllSidebar(){
 // ===== Export JSON (quaternions) =====
 function buildNode(obj){
   if (!obj.userData?.isSelectable) return null;
-  const box = new THREE.Box3().setFromObject(obj);
+  const box = getBox(obj); // Use the updated getBox function that handles Object Root properly
   const size = box.getSize(new THREE.Vector3());
 
   // Get world position for accurate meter measurements
