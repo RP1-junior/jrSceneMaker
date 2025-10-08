@@ -3042,13 +3042,6 @@ function updateOrCreateObject(node, parent, existingObjects) {
     }
   }
 
-  // Handle children
-  if (node.aChildren && Array.isArray(node.aChildren)) {
-    node.aChildren.forEach(childNode => {
-      updateOrCreateObject(childNode, obj, existingObjects);
-    });
-  }
-
   return obj;
 }
 
