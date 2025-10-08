@@ -2647,7 +2647,7 @@ function buildNode(obj){
   // Special handling for Object Root - no sReference required
   if (obj.userData?.isCanvasRoot) {
     node.pResource = {
-      sName: baseName
+      sName: baseName,
       // No sReference for Object Root
     };
   }
@@ -2728,10 +2728,10 @@ function parseJSONAndUpdateScene(jsonText) {
       }
     });
 
-    // Update existing objects or create new ones
+    // Process objects and create groups based on JSON hierarchy
     if (rootNode.aChildren && Array.isArray(rootNode.aChildren)) {
       rootNode.aChildren.forEach(childNode => {
-        updateOrCreateObject(childNode, canvasRoot, existingObjects);
+        processNodeHierarchically(childNode, canvasRoot, existingObjects);
       });
     }
 
@@ -2739,7 +2739,7 @@ function parseJSONAndUpdateScene(jsonText) {
     const jsonObjectKeys = new Set();
     if (rootNode.aChildren) {
       rootNode.aChildren.forEach(childNode => {
-        collectObjectKeys(childNode, jsonObjectKeys);
+        collectObjectKeysRecursively(childNode, jsonObjectKeys);
       });
     }
 
@@ -2759,6 +2759,136 @@ function parseJSONAndUpdateScene(jsonText) {
     alert('Invalid JSON format. Please check your syntax.');
     // Restore original JSON on error
     jsonEditor.value = originalJSON;
+  }
+}
+
+function processNodeHierarchically(node, parent, existingObjects) {
+  if (!node || !node.pResource) return null;
+  
+  // Create the object first
+  const obj = updateOrCreateObject(node, parent, existingObjects);
+  if (!obj) return null;
+  
+  // Check if this object has children
+  if (node.aChildren && Array.isArray(node.aChildren) && node.aChildren.length > 0) {
+    // This object has children, so we need to create an editor group
+    const group = new THREE.Group();
+    group.userData.isSelectable = true;
+    group.userData.isEditorGroup = true;
+    group.name = obj.name || "Attached " + Date.now();
+    
+    // Copy object's transform to the group
+    group.position.copy(obj.position);
+    group.quaternion.copy(obj.quaternion);
+    group.scale.copy(obj.scale);
+    
+    // Remove object from its current parent and add it as first child of group
+    parent.remove(obj);
+    group.add(obj);
+    
+    // Reset object's transform relative to group
+    obj.position.set(0, 0, 0);
+    obj.quaternion.set(0, 0, 0, 1);
+    obj.scale.set(1, 1, 1);
+    
+    // Clean up object's sidebar representation
+    if (obj.userData.listItem) {
+      const li = obj.userData.listItem;
+      const next = li.nextSibling;
+      li.remove();
+      if(next && next.tagName==="UL") next.remove();
+      delete obj.userData.listItem;
+    }
+    
+    // Add group to parent
+    parent.add(group);
+    
+    // Process children and add them to the group
+    node.aChildren.forEach(childNode => {
+      const childObject = processNodeHierarchically(childNode, group, existingObjects);
+      if (childObject) {
+        // Store original metadata for the child
+        if (!childObject.userData) childObject.userData = {};
+        childObject.userData.originalListType = childObject.userData.listType || (childObject instanceof THREE.Group ? "group" : "model");
+        childObject.userData.originalName = childObject.name;
+        
+        // Clean up existing helpers and sidebar representation
+        if(childObject.userData.boxHelper){ scene.remove(childObject.userData.boxHelper); delete childObject.userData.boxHelper; }
+        if(childObject.userData.dimGroup){ scene.remove(childObject.userData.dimGroup); delete childObject.userData.dimGroup; }
+        if (childObject.userData.listItem) {
+          const li = childObject.userData.listItem;
+          const next = li.nextSibling;
+          li.remove();
+          if(next && next.tagName==="UL") next.remove();
+          delete childObject.userData.listItem;
+        }
+        
+        // Calculate local transform relative to group
+        const worldPosition = new THREE.Vector3();
+        const worldQuaternion = new THREE.Quaternion();
+        const worldScale = new THREE.Vector3();
+        childObject.getWorldPosition(worldPosition);
+        childObject.getWorldQuaternion(worldQuaternion);
+        childObject.getWorldScale(worldScale);
+        
+        // Ensure the group and all ancestors are in the scene and matrices are up-to-date
+        scene.updateMatrixWorld(true);
+        
+        // Calculate the correct local transform
+        const groupWorldMatrix = new THREE.Matrix4();
+        group.updateMatrixWorld(true);
+        groupWorldMatrix.copy(group.matrixWorld);
+        
+        const targetWorldMatrix = new THREE.Matrix4();
+        targetWorldMatrix.compose(worldPosition, worldQuaternion, worldScale);
+        
+        const localMatrix = new THREE.Matrix4();
+        localMatrix.copy(groupWorldMatrix).invert().multiply(targetWorldMatrix);
+        
+        // Decompose and set the local transform
+        const localPosition = new THREE.Vector3();
+        const localQuaternion = new THREE.Quaternion();
+        const localScale = new THREE.Vector3();
+        localMatrix.decompose(localPosition, localQuaternion, localScale);
+        
+        childObject.position.copy(localPosition);
+        childObject.quaternion.copy(localQuaternion);
+        childObject.scale.copy(localScale);
+        
+        // Remove from current parent and add to group
+        if (childObject.parent) {
+          childObject.parent.remove(childObject);
+        }
+        group.add(childObject);
+      }
+    });
+    
+    // Create helpers and add to sidebar
+    createBoxHelperFor(group);
+    createParentBoxHelperFor(group);
+    addGroupToList(group, group.name);
+    
+    // Update visuals
+    updateAllVisuals(group);
+    storeInitialTransform(group);
+    
+    return group;
+  } else {
+    // No children, just return the object
+    return obj;
+  }
+}
+
+function collectObjectKeysRecursively(node, keys) {
+  if (node && node.pResource && node.pResource.sName) {
+    const sReference = node.pResource.sReference || '';
+    const compositeKey = `${node.pResource.sName}|${sReference}`;
+    keys.add(compositeKey);
+  }
+  if (node.aChildren && Array.isArray(node.aChildren)) {
+    node.aChildren.forEach(childNode => {
+      collectObjectKeysRecursively(childNode, keys);
+    });
   }
 }
 
