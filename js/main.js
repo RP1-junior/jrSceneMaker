@@ -258,6 +258,7 @@ function updateModelProperties(model){
     const canvasSize = new THREE.Vector3(groundSize, groundSize, groundSize);
     const worldPosition = new THREE.Vector3(0, groundSize / 2, 0); // Canvas center
     const worldScale = new THREE.Vector3(1, 1, 1); // No scaling for canvas
+    const worldQuaternion = new THREE.Quaternion(0, 0, 0, 1); // Identity quaternion for canvas
 
     // Calculate triangle count
     const triangleCount = getTriangleCount(model);
@@ -265,6 +266,7 @@ function updateModelProperties(model){
     model.userData.properties = {
       pos: worldPosition,
       scl: worldScale,
+      rot: worldQuaternion.clone(),
       size: canvasSize.clone(),
       triangles: triangleCount
     };
@@ -282,12 +284,17 @@ function updateModelProperties(model){
   const worldScale = new THREE.Vector3();
   model.getWorldScale(worldScale);
 
+  // Get world quaternion for accurate rotation
+  const worldQuaternion = new THREE.Quaternion();
+  model.getWorldQuaternion(worldQuaternion);
+
   // Calculate triangle count
   const triangleCount = getTriangleCount(model);
 
   model.userData.properties = {
     pos: worldPosition,
     scl: worldScale,
+    rot: worldQuaternion.clone(),
     size: size.clone(),
     triangles: triangleCount
   };
@@ -301,6 +308,7 @@ function updatePropertiesPanel(model){
   const p = model.userData.properties;
   propertiesPanel.textContent =
     `Position: (${p.pos.x.toFixed(2)}, ${p.pos.y.toFixed(2)}, ${p.pos.z.toFixed(2)})\n`+
+    `Rotation: (${p.rot.x.toFixed(4)}, ${p.rot.y.toFixed(4)}, ${p.rot.z.toFixed(4)}, ${p.rot.w.toFixed(4)})\n`+
     `Scale: (${p.scl.x.toFixed(2)}, ${p.scl.y.toFixed(2)}, ${p.scl.z.toFixed(2)})\n`+
     `Bounds: (${p.size.x.toFixed(2)}, ${p.size.y.toFixed(2)}, ${p.size.z.toFixed(2)})\n`+
     `Triangles: ${p.triangles.toLocaleString()}`;
