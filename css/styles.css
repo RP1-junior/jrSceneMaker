@@ -70,7 +70,7 @@ body {
   right: 10px;
   z-index: 10;
   width: 300px;
-  max-height: 70%;
+  max-height: 100%;
   background: rgba(0, 0, 0, 0.6);
   padding: 6px;
   border-radius: 4px;
@@ -88,7 +88,7 @@ body {
 
 #jsonEditor {
   flex: 1;
-  min-height: 300px;
+  min-height: 75vh;
   background: #1a1a1a;
   color: #ffffff;
   border: 1px solid #555;

@@ -2718,11 +2718,13 @@ function parseJSONAndUpdateScene(jsonText) {
     const rootNode = data[0];
     if (!rootNode || !rootNode.pResource) return;
 
-    // Create a map of existing objects by name for reference
+    // Create a map of existing objects by composite key (name + sReference) for reference
     const existingObjects = new Map();
     canvasRoot.traverse(obj => {
       if (obj.userData?.isSelectable && obj !== canvasRoot && obj.name) {
-        existingObjects.set(obj.name, obj);
+        const sReference = obj.userData?.sourceRef?.reference || '';
+        const compositeKey = `${obj.name}|${sReference}`;
+        existingObjects.set(compositeKey, obj);
       }
     });
 
@@ -2734,15 +2736,15 @@ function parseJSONAndUpdateScene(jsonText) {
     }
 
     // Remove objects that are no longer in the JSON
-    const jsonObjectNames = new Set();
+    const jsonObjectKeys = new Set();
     if (rootNode.aChildren) {
       rootNode.aChildren.forEach(childNode => {
-        collectObjectNames(childNode, jsonObjectNames);
+        collectObjectKeys(childNode, jsonObjectKeys);
       });
     }
 
-    existingObjects.forEach((obj, name) => {
-      if (!jsonObjectNames.has(name)) {
+    existingObjects.forEach((obj, key) => {
+      if (!jsonObjectKeys.has(key)) {
         cleanupObject(obj);
         if (obj.parent) obj.parent.remove(obj);
       }
@@ -2760,13 +2762,15 @@ function parseJSONAndUpdateScene(jsonText) {
   }
 }
 
-function collectObjectNames(node, names) {
+function collectObjectKeys(node, keys) {
   if (node && node.pResource && node.pResource.sName) {
-    names.add(node.pResource.sName);
+    const sReference = node.pResource.sReference || '';
+    const compositeKey = `${node.pResource.sName}|${sReference}`;
+    keys.add(compositeKey);
   }
   if (node.aChildren && Array.isArray(node.aChildren)) {
     node.aChildren.forEach(childNode => {
-      collectObjectNames(childNode, names);
+      collectObjectKeys(childNode, keys);
     });
   }
 }
@@ -2775,19 +2779,104 @@ function updateOrCreateObject(node, parent, existingObjects) {
   if (!node || !node.pResource) return null;
 
   const objectName = node.pResource.sName || "Imported Object";
-  let obj = existingObjects.get(objectName);
-
+  const sReference = node.pResource.sReference || '';
+  const compositeKey = `${objectName}|${sReference}`;
+  
+  // First check if we already have an object with this exact composite key
+  let obj = existingObjects.get(compositeKey);
+  
   if (obj) {
     // Update existing object
-    updateObjectFromNode(obj, node);
+    updateObjectFromNode(obj, node, existingObjects);
   } else {
-    // Create new object
-    obj = createObjectFromNode(node);
-    if (obj) {
+    // Check if we have an object with the same sReference (for model reuse)
+    // but different sName (for unique identification)
+    let modelToReuse = null;
+    if (sReference) {
+      for (const [key, existingObj] of existingObjects) {
+        if (existingObj.userData?.sourceRef?.reference === sReference) {
+          modelToReuse = existingObj;
+          break;
+        }
+      }
+    }
+    
+    if (modelToReuse) {
+      // Reuse the existing model but create a new object instance
+      obj = modelToReuse.clone(true);
+      obj.name = objectName;
+      
+      // Deep clone materials and geometries to avoid sharing
+      obj.traverse(node => {
+        if (node.isMesh) {
+          if (node.material) {
+            if (Array.isArray(node.material)) {
+              node.material = node.material.map(mat => mat.clone());
+            } else {
+              node.material = node.material.clone();
+            }
+          }
+          if (node.geometry) {
+            node.geometry = node.geometry.clone();
+          }
+        }
+      });
+      
+      // Set up proper userData for editor functionality
+      obj.userData = {
+        isSelectable: true,
+        sourceRef: {
+          reference: sReference,
+          originalFileName: sReference,
+          baseName: objectName
+        }
+      };
+      
+      // Apply the transform from the JSON
+      if (node.pTransform) {
+        if (node.pTransform.aPosition) {
+          obj.position.set(
+            node.pTransform.aPosition[0],
+            node.pTransform.aPosition[1],
+            node.pTransform.aPosition[2]
+          );
+        }
+        if (node.pTransform.aRotation) {
+          obj.quaternion.set(
+            node.pTransform.aRotation[0],
+            node.pTransform.aRotation[1],
+            node.pTransform.aRotation[2],
+            node.pTransform.aRotation[3]
+          );
+        }
+        if (node.pTransform.aScale) {
+          obj.scale.set(
+            node.pTransform.aScale[0],
+            node.pTransform.aScale[1],
+            node.pTransform.aScale[2]
+          );
+        }
+      }
+      
       parent.add(obj);
       createBoxHelperFor(obj);
       addModelToList(obj, obj.name);
       storeInitialTransform(obj);
+      
+      // Add the new object to the existingObjects map
+      existingObjects.set(compositeKey, obj);
+    } else {
+      // Create completely new object
+      obj = createObjectFromNode(node);
+      if (obj) {
+        parent.add(obj);
+        createBoxHelperFor(obj);
+        addModelToList(obj, obj.name);
+        storeInitialTransform(obj);
+        
+        // Add the new object to the existingObjects map
+        existingObjects.set(compositeKey, obj);
+      }
     }
   }
 
@@ -2801,8 +2890,11 @@ function updateOrCreateObject(node, parent, existingObjects) {
   return obj;
 }
 
-function updateObjectFromNode(obj, node) {
-  // Update name if it changed (but preserve the original source reference)
+function updateObjectFromNode(obj, node, existingObjects) {
+  // Store the old composite key before making changes
+  const oldCompositeKey = `${obj.name}|${obj.userData.sourceRef?.reference || ''}`;
+  
+  // Update name if it changed
   if (node.pResource && node.pResource.sName && obj.name !== node.pResource.sName) {
     obj.name = node.pResource.sName;
     // Update sidebar label
@@ -2814,8 +2906,24 @@ function updateObjectFromNode(obj, node) {
     }
   }
 
-  // IMPORTANT: Never update the sourceRef from JSON - it should always remain the original file reference
-  // The sReference in JSON is only used for reference, not for updating the object's sourceRef
+  // Update sourceRef from JSON to ensure round-trip consistency
+  // This allows objects with shared sReference values to be properly maintained
+  if (node.pResource && node.pResource.sReference !== undefined) {
+    obj.userData.sourceRef = {
+      reference: node.pResource.sReference || '',
+      originalFileName: node.pResource.sReference || '',
+      baseName: node.pResource.sName || obj.name || "Imported Object"
+    };
+  }
+
+  // Update the existingObjects map if the composite key changed
+  if (existingObjects) {
+    const newCompositeKey = `${obj.name}|${obj.userData.sourceRef?.reference || ''}`;
+    if (oldCompositeKey !== newCompositeKey) {
+      existingObjects.delete(oldCompositeKey);
+      existingObjects.set(newCompositeKey, obj);
+    }
+  }
 
   // Update transform
   if (node.pTransform) {
@@ -2857,14 +2965,13 @@ function createObjectFromNode(node) {
   obj.userData.isSelectable = true;
   obj.name = node.pResource.sName || "Imported Object";
 
-  // Preserve the original source reference from JSON
-  if (node.pResource && node.pResource.sReference) {
-    obj.userData.sourceRef = {
-      reference: node.pResource.sReference,
-      originalFileName: node.pResource.sReference,
-      baseName: node.pResource.sName || "Imported Object"
-    };
-  }
+  // Always set source reference from JSON, even if empty
+  // This ensures consistent behavior for objects with shared sReference values
+  obj.userData.sourceRef = {
+    reference: node.pResource.sReference || '',
+    originalFileName: node.pResource.sReference || '',
+    baseName: node.pResource.sName || "Imported Object"
+  };
 
   // Apply transform
   if (node.pTransform) {
