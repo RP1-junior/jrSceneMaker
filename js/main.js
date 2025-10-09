@@ -110,6 +110,16 @@ function getBox(obj){
     );
     return box;
   }
+  
+  // Use JSON bounding box if available (for imported objects)
+  if (obj.userData?.jsonBounds) {
+    const box = new THREE.Box3();
+    const center = new THREE.Vector3();
+    obj.getWorldPosition(center);
+    box.setFromCenterAndSize(center, obj.userData.jsonBounds.size);
+    return box;
+  }
+  
   return new THREE.Box3().setFromObject(obj); 
 }
 
@@ -141,10 +151,15 @@ function getTriangleCount(obj){
 }
 
 function updateAllVisuals(obj){
+  
   if(!obj) return;
 
-  // Apply canvas clamp restrictions to any object being transformed (including nested objects)
-  clampToCanvasRecursive(obj);
+  // Skip canvas clamping for objects imported from JSON (they should use exact world positions)
+  if (!obj.userData?.isImportedFromJSON) {
+    // Apply canvas clamp restrictions to any object being transformed (including nested objects)
+    clampToCanvasRecursive(obj);
+  } else {
+  }
 
   updateModelProperties(obj);
   updatePropertiesPanel(obj);
@@ -228,20 +243,40 @@ function snapUniformScale(obj, step=SNAP_STEP){
 }
 
 function clampToCanvas(obj){
+  
   const half = groundSize/2;
   const box = getBox(obj);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const minX = center.x - size.x/2, maxX = center.x + size.x/2;
   const minZ = center.z - size.z/2, maxZ = center.z + size.z/2;
-  if (minX < -half) obj.position.x += -half - minX;
-  if (maxX >  half) obj.position.x -= maxX - half;
-  if (minZ < -half) obj.position.z += -half - minZ;
-  if (maxZ >  half) obj.position.z -= maxZ - half;
-  if (box.min.y < 0) obj.position.y += -box.min.y;
+  
+  
+  if (minX < -half) {
+    const adjustment = -half - minX;
+    obj.position.x += adjustment;
+  }
+  if (maxX >  half) {
+    const adjustment = maxX - half;
+    obj.position.x -= adjustment;
+  }
+  if (minZ < -half) {
+    const adjustment = -half - minZ;
+    obj.position.z += adjustment;
+  }
+  if (maxZ >  half) {
+    const adjustment = maxZ - half;
+    obj.position.z -= adjustment;
+  }
+  if (box.min.y < 0) {
+    const adjustment = -box.min.y;
+    obj.position.y += adjustment;
+  }
+  
 }
 
 function clampToCanvasRecursive(obj){
+  
   // Only clamp top-level groups as single units
   // Nested groups should move with their parent group, not be individually clamped
   if (obj.userData?.isEditorGroup) {
@@ -252,6 +287,7 @@ function clampToCanvasRecursive(obj){
     // For non-groups, clamp normally
     clampToCanvas(obj);
   }
+  
 }
 
 function findTopLevelGroup(obj) {
@@ -2745,10 +2781,16 @@ function updateJSONEditorFromScene() {
 function parseJSONAndUpdateScene(jsonText) {
   try {
     const data = JSON.parse(jsonText);
-    if (!Array.isArray(data) || data.length === 0) return;
+    
+    if (!Array.isArray(data) || data.length === 0) {
+      return;
+    }
 
     const rootNode = data[0];
-    if (!rootNode || !rootNode.pResource) return;
+    
+    if (!rootNode || !rootNode.pResource) {
+      return;
+    }
 
     // Create a map of existing objects by composite key (name + sReference) for reference
     const existingObjects = new Map();
@@ -2759,10 +2801,11 @@ function parseJSONAndUpdateScene(jsonText) {
         existingObjects.set(compositeKey, obj);
       }
     });
+    
 
     // Process objects and create groups based on JSON hierarchy
     if (rootNode.aChildren && Array.isArray(rootNode.aChildren)) {
-      rootNode.aChildren.forEach(childNode => {
+      rootNode.aChildren.forEach((childNode, index) => {
         processNodeHierarchically(childNode, canvasRoot, existingObjects);
       });
     }
@@ -2774,7 +2817,7 @@ function parseJSONAndUpdateScene(jsonText) {
         collectObjectKeysRecursively(childNode, jsonObjectKeys);
       });
     }
-
+    
     existingObjects.forEach((obj, key) => {
       if (!jsonObjectKeys.has(key)) {
         cleanupObject(obj);
@@ -2783,15 +2826,26 @@ function parseJSONAndUpdateScene(jsonText) {
     });
 
     // Update original JSON and hide apply button
-    originalJSON = jsonText;
-    hasUnsavedChanges = false;
-    applyChanges.style.display = 'none';
-  } catch (error) {
-    console.error('Error parsing JSON:', error);
-    alert('Invalid JSON format. Please check your syntax.');
-    // Restore original JSON on error
-    jsonEditor.value = originalJSON;
-  }
+      originalJSON = jsonText;
+      hasUnsavedChanges = false;
+      applyChanges.style.display = 'none';
+      
+      // Clear the isImportedFromJSON flags and jsonBounds so normal 3D editing rules apply
+      scene.traverse((obj) => {
+        if (obj.userData?.isImportedFromJSON) {
+          delete obj.userData.isImportedFromJSON;
+        }
+        if (obj.userData?.jsonBounds) {
+          delete obj.userData.jsonBounds;
+        }
+      });
+      
+    } catch (error) {
+      console.error('❌ Error parsing JSON:', error);
+      alert('Invalid JSON format. Please check your syntax.');
+      // Restore original JSON on error
+      jsonEditor.value = originalJSON;
+    }
 }
 
 function processNodeHierarchically(node, parent, existingObjects) {
@@ -2803,46 +2857,154 @@ function processNodeHierarchically(node, parent, existingObjects) {
   
   // Check if this object has children
   if (node.aChildren && Array.isArray(node.aChildren) && node.aChildren.length > 0) {
-    // This object has children, so we need to create an editor group
-    const group = new THREE.Group();
-    group.userData.isSelectable = true;
-    group.userData.isEditorGroup = true;
-    group.name = obj.name || "Attached " + Date.now();
     
-    // Copy object's transform to the group
-    group.position.copy(obj.position);
-    group.quaternion.copy(obj.quaternion);
-    group.scale.copy(obj.scale);
-    
-    // Remove object from its current parent and add it as first child of group
-    parent.remove(obj);
-    group.add(obj);
-    
-    // Reset object's transform relative to group
-    obj.position.set(0, 0, 0);
-    obj.quaternion.set(0, 0, 0, 1);
-    obj.scale.set(1, 1, 1);
-    
-    // Clean up object's sidebar representation
-    if (obj.userData.listItem) {
-      const li = obj.userData.listItem;
-      const next = li.nextSibling;
-      li.remove();
-      if(next && next.tagName==="UL") next.remove();
-      delete obj.userData.listItem;
+    // Check if the object is already a group - if so, we can reuse it
+    let group;
+    if (obj instanceof THREE.Group && obj.userData?.isEditorGroup) {
+      group = obj;
+      
+      // Update the group's transform from JSON
+      if (node.pTransform) {
+        if (node.pTransform.aPosition) {
+          group.position.set(
+            node.pTransform.aPosition[0],
+            node.pTransform.aPosition[1],
+            node.pTransform.aPosition[2]
+          );
+        }
+        if (node.pTransform.aRotation) {
+          group.quaternion.set(
+            node.pTransform.aRotation[0],
+            node.pTransform.aRotation[1],
+            node.pTransform.aRotation[2],
+            node.pTransform.aRotation[3]
+          );
+        }
+        if (node.pTransform.aScale) {
+          group.scale.set(
+            node.pTransform.aScale[0],
+            node.pTransform.aScale[1],
+            node.pTransform.aScale[2]
+          );
+        }
+      }
+      
+      // Store bounding box from JSON if available
+      if (node.aBound && Array.isArray(node.aBound) && node.aBound.length >= 3) {
+        group.userData.jsonBounds = {
+          size: new THREE.Vector3(node.aBound[0], node.aBound[1], node.aBound[2])
+        };
+      }
+      
+      // Mark as imported from JSON
+      group.userData.isImportedFromJSON = true;
+      
+    } else {
+      // This object has children, so we need to create an editor group
+      group = new THREE.Group();
+      group.userData.isSelectable = true;
+      group.userData.isEditorGroup = true;
+      group.userData.isImportedFromJSON = true; // Mark as imported from JSON to skip canvas clamping
+      group.name = obj.name || "Attached " + Date.now();
+      
+      
+      // Use EXACT JSON transform values for the group (world positions)
+      if (node.pTransform) {
+        if (node.pTransform.aPosition) {
+          group.position.set(
+            node.pTransform.aPosition[0],
+            node.pTransform.aPosition[1],
+            node.pTransform.aPosition[2]
+          );
+        }
+        if (node.pTransform.aRotation) {
+          group.quaternion.set(
+            node.pTransform.aRotation[0],
+            node.pTransform.aRotation[1],
+            node.pTransform.aRotation[2],
+            node.pTransform.aRotation[3]
+          );
+        }
+        if (node.pTransform.aScale) {
+          group.scale.set(
+            node.pTransform.aScale[0],
+            node.pTransform.aScale[1],
+            node.pTransform.aScale[2]
+          );
+        }
+      } else {
+      }
+      
+      // Store bounding box from JSON if available
+      if (node.aBound && Array.isArray(node.aBound) && node.aBound.length >= 3) {
+        group.userData.jsonBounds = {
+          size: new THREE.Vector3(node.aBound[0], node.aBound[1], node.aBound[2])
+        };
+      } else {
+      }
+      
+      
+      // Remove object from its current parent and add it as first child of group
+      parent.remove(obj);
+      group.add(obj);
+      
+      // Reset object's transform relative to group (it becomes the "parent" object)
+      obj.position.set(0, 0, 0);
+      obj.quaternion.set(0, 0, 0, 1);
+      obj.scale.set(1, 1, 1);
+      
+      // Clean up object's sidebar representation
+      if (obj.userData.listItem) {
+        const li = obj.userData.listItem;
+        const next = li.nextSibling;
+        li.remove();
+        if(next && next.tagName==="UL") next.remove();
+        delete obj.userData.listItem;
+      }
+      
+      // Add group to parent
+      parent.add(group);
+      
+      
+      // Force matrix update to ensure world positions are correct
+      scene.updateMatrixWorld(true);
+      
+      
+      // CRITICAL FIX: Ensure the group's world position matches the JSON aPosition
+      // If it doesn't match, adjust the group's local position to compensate
+      const currentWorldPosition = group.getWorldPosition(new THREE.Vector3());
+      const expectedWorldPosition = new THREE.Vector3(
+        node.pTransform.aPosition[0],
+        node.pTransform.aPosition[1],
+        node.pTransform.aPosition[2]
+      );
+      
+      if (!currentWorldPosition.equals(expectedWorldPosition)) {
+        
+        // Calculate the correction needed
+        const correction = expectedWorldPosition.clone().sub(currentWorldPosition);
+        group.position.add(correction);
+        
+        
+        // Force another matrix update
+        scene.updateMatrixWorld(true);
+      }
     }
     
-    // Add group to parent
-    parent.add(group);
-    
-    // Process children and add them to the group
-    node.aChildren.forEach(childNode => {
+    // Process children and add them to the group using EXACT JSON values
+    node.aChildren.forEach((childNode, index) => {
+      
       const childObject = processNodeHierarchically(childNode, group, existingObjects);
       if (childObject) {
         // Store original metadata for the child
         if (!childObject.userData) childObject.userData = {};
         childObject.userData.originalListType = childObject.userData.listType || (childObject instanceof THREE.Group ? "group" : "model");
         childObject.userData.originalName = childObject.name;
+        
+        // Store expected world position from JSON for comparison
+        if (childNode.pTransform?.aPosition) {
+          childObject.userData.expectedWorldPosition = childNode.pTransform.aPosition;
+        }
         
         // Clean up existing helpers and sidebar representation
         if(childObject.userData.boxHelper){ scene.remove(childObject.userData.boxHelper); delete childObject.userData.boxHelper; }
@@ -2855,43 +3017,59 @@ function processNodeHierarchically(node, parent, existingObjects) {
           delete childObject.userData.listItem;
         }
         
-        // Calculate local transform relative to group
-        const worldPosition = new THREE.Vector3();
-        const worldQuaternion = new THREE.Quaternion();
-        const worldScale = new THREE.Vector3();
-        childObject.getWorldPosition(worldPosition);
-        childObject.getWorldQuaternion(worldQuaternion);
-        childObject.getWorldScale(worldScale);
         
-        // Ensure the group and all ancestors are in the scene and matrices are up-to-date
-        scene.updateMatrixWorld(true);
+        // Use EXACT JSON transform values for child objects (world positions)
+        // But convert them to local positions relative to the group
+        if (childNode.pTransform) {
+          // Get the child's world position from JSON
+          const childWorldPosition = new THREE.Vector3(
+            childNode.pTransform.aPosition[0],
+            childNode.pTransform.aPosition[1], 
+            childNode.pTransform.aPosition[2]
+          );
+          
+          // Get the group's world position
+          const groupWorldPosition = new THREE.Vector3();
+          group.getWorldPosition(groupWorldPosition);
+          
+          // Calculate local position relative to group
+          const localPosition = childWorldPosition.clone().sub(groupWorldPosition);
+          
+          childObject.position.copy(localPosition);
+          
+          if (childNode.pTransform.aRotation) {
+            childObject.quaternion.set(
+              childNode.pTransform.aRotation[0],
+              childNode.pTransform.aRotation[1],
+              childNode.pTransform.aRotation[2],
+              childNode.pTransform.aRotation[3]
+            );
+          }
+          if (childNode.pTransform.aScale) {
+            childObject.scale.set(
+              childNode.pTransform.aScale[0],
+              childNode.pTransform.aScale[1],
+              childNode.pTransform.aScale[2]
+            );
+          }
+        } else {
+        }
         
-        // Calculate the correct local transform
-        const groupWorldMatrix = new THREE.Matrix4();
-        group.updateMatrixWorld(true);
-        groupWorldMatrix.copy(group.matrixWorld);
+        // Store bounding box from JSON if available
+        if (childNode.aBound && Array.isArray(childNode.aBound) && childNode.aBound.length >= 3) {
+          childObject.userData.jsonBounds = {
+            size: new THREE.Vector3(childNode.aBound[0], childNode.aBound[1], childNode.aBound[2])
+          };
+        } else {
+        }
         
-        const targetWorldMatrix = new THREE.Matrix4();
-        targetWorldMatrix.compose(worldPosition, worldQuaternion, worldScale);
-        
-        const localMatrix = new THREE.Matrix4();
-        localMatrix.copy(groupWorldMatrix).invert().multiply(targetWorldMatrix);
-        
-        // Decompose and set the local transform
-        const localPosition = new THREE.Vector3();
-        const localQuaternion = new THREE.Quaternion();
-        const localScale = new THREE.Vector3();
-        localMatrix.decompose(localPosition, localQuaternion, localScale);
-        
-        childObject.position.copy(localPosition);
-        childObject.quaternion.copy(localQuaternion);
-        childObject.scale.copy(localScale);
         
         // Remove from current parent and add to group
         if (childObject.parent) {
           childObject.parent.remove(childObject);
         }
         group.add(childObject);
+        
       }
     });
     
@@ -2903,6 +3081,7 @@ function processNodeHierarchically(node, parent, existingObjects) {
     // Update visuals
     updateAllVisuals(group);
     storeInitialTransform(group);
+    
     
     return group;
   } else {
@@ -2940,6 +3119,7 @@ function collectObjectKeys(node, keys) {
 function updateOrCreateObject(node, parent, existingObjects) {
   if (!node || !node.pResource) return null;
 
+
   const objectName = node.pResource.sName || "Imported Object";
   const sReference = node.pResource.sReference || '';
   const compositeKey = `${objectName}|${sReference}`;
@@ -2950,6 +3130,13 @@ function updateOrCreateObject(node, parent, existingObjects) {
   if (obj) {
     // Update existing object
     updateObjectFromNode(obj, node, existingObjects);
+    
+    // If this object has children, we need to ensure it's properly structured as a group
+    // The existing object might not be a group, so we need to handle this case
+    if (node.aChildren && Array.isArray(node.aChildren) && node.aChildren.length > 0) {
+      // The processNodeHierarchically function will handle creating the group structure
+      // We just need to make sure the existing object is marked correctly
+    }
   } else {
     // Check if we have an object with the same sReference (for model reuse)
     // but different sName (for unique identification)
@@ -2987,12 +3174,20 @@ function updateOrCreateObject(node, parent, existingObjects) {
       // Set up proper userData for editor functionality
       obj.userData = {
         isSelectable: true,
+        isImportedFromJSON: true, // Mark as imported from JSON to skip canvas clamping
         sourceRef: {
           reference: sReference,
           originalFileName: sReference,
           baseName: objectName
         }
       };
+      
+      // Store bounding box from JSON if available
+      if (node.aBound && Array.isArray(node.aBound) && node.aBound.length >= 3) {
+        obj.userData.jsonBounds = {
+          size: new THREE.Vector3(node.aBound[0], node.aBound[1], node.aBound[2])
+        };
+      }
       
       // Apply the transform from the JSON
       if (node.pTransform) {
@@ -3018,6 +3213,7 @@ function updateOrCreateObject(node, parent, existingObjects) {
             node.pTransform.aScale[2]
           );
         }
+      } else {
       }
       
       parent.add(obj);
@@ -3042,12 +3238,17 @@ function updateOrCreateObject(node, parent, existingObjects) {
     }
   }
 
+
   return obj;
 }
 
 function updateObjectFromNode(obj, node, existingObjects) {
+  
   // Store the old composite key before making changes
   const oldCompositeKey = `${obj.name}|${obj.userData.sourceRef?.reference || ''}`;
+  
+  // Mark as imported from JSON to skip canvas clamping
+  obj.userData.isImportedFromJSON = true;
   
   // Update name if it changed
   if (node.pResource && node.pResource.sName && obj.name !== node.pResource.sName) {
@@ -3068,6 +3269,13 @@ function updateObjectFromNode(obj, node, existingObjects) {
       reference: node.pResource.sReference || '',
       originalFileName: node.pResource.sReference || '',
       baseName: node.pResource.sName || obj.name || "Imported Object"
+    };
+  }
+
+  // Store bounding box from JSON if available
+  if (node.aBound && Array.isArray(node.aBound) && node.aBound.length >= 3) {
+    obj.userData.jsonBounds = {
+      size: new THREE.Vector3(node.aBound[0], node.aBound[1], node.aBound[2])
     };
   }
 
@@ -3111,6 +3319,7 @@ function updateObjectFromNode(obj, node, existingObjects) {
 }
 
 function createObjectFromNode(node) {
+  
   // Create a placeholder object for now
   // In a full implementation, you would load the actual GLTF model
   const geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -3118,6 +3327,7 @@ function createObjectFromNode(node) {
   const obj = new THREE.Mesh(geometry, material);
   
   obj.userData.isSelectable = true;
+  obj.userData.isImportedFromJSON = true; // Mark as imported from JSON to skip canvas clamping
   obj.name = node.pResource.sName || "Imported Object";
 
   // Always set source reference from JSON, even if empty
@@ -3127,6 +3337,13 @@ function createObjectFromNode(node) {
     originalFileName: node.pResource.sReference || '',
     baseName: node.pResource.sName || "Imported Object"
   };
+
+  // Store bounding box from JSON if available
+  if (node.aBound && Array.isArray(node.aBound) && node.aBound.length >= 3) {
+    obj.userData.jsonBounds = {
+      size: new THREE.Vector3(node.aBound[0], node.aBound[1], node.aBound[2])
+    };
+  }
 
   // Apply transform
   if (node.pTransform) {
@@ -3152,7 +3369,9 @@ function createObjectFromNode(node) {
         node.pTransform.aScale[2]
       );
     }
+  } else {
   }
+
 
   return obj;
 }
