@@ -875,7 +875,10 @@ function createSidebarItem(obj, name, isGroup=false, parentList=null){
 
   if (isGroup) {
     const childList = ensureChildList(li);
-    childList.classList.add("children-collapsed");
+    // Expand all hierarchies by default
+    caret?.classList.add("expanded");
+    childList.classList.remove("children-collapsed");
+    childList.style.display = "block";
   }
 }
 
@@ -2244,8 +2247,24 @@ renderer.domElement.addEventListener("mousemove", e=>{
   let obj = null;
   if (hits.length>0){
     obj = hits[0].object;
+    // Walk up the hierarchy to find the topmost selectable object
     while (obj.parent && !obj.userData.isSelectable) obj = obj.parent;
-    if (!obj.userData.isSelectable) obj = null;
+    
+    // If we found a selectable object, check if it's a child in a deeply nested group
+    if (obj.userData.isSelectable) {
+      // For deeply nested groups, we want to hover the topmost group that contains this object
+      let topmostSelectable = obj;
+      let current = obj;
+      while (current.parent && current.parent !== canvasRoot) {
+        if (current.parent.userData.isSelectable) {
+          topmostSelectable = current.parent;
+        }
+        current = current.parent;
+      }
+      obj = topmostSelectable;
+    } else {
+      obj = null;
+    }
   }
   if (hoveredObject && !selectedObjects.includes(hoveredObject)) setHelperVisible(hoveredObject,false);
   hoveredObject = obj;
@@ -2266,10 +2285,24 @@ renderer.domElement.addEventListener("click", e=>{
   const hits = raycaster.intersectObjects([canvasRoot], true);
   if (hits.length>0){
     let obj = hits[0].object;
+    // Walk up the hierarchy to find the topmost selectable object
     while (obj.parent && !obj.userData.isSelectable) obj = obj.parent;
-    if (obj.userData.isSelectable){
-      selectFromCanvas(obj, e.shiftKey);
-      frameCameraOn(obj);
+    
+    // If we found a selectable object, check if it's a child in a deeply nested group
+    if (obj.userData.isSelectable) {
+      // For deeply nested groups, we want to select the topmost group that contains this object
+      // Walk up to find the topmost selectable parent that's not the canvas root
+      let topmostSelectable = obj;
+      let current = obj;
+      while (current.parent && current.parent !== canvasRoot) {
+        if (current.parent.userData.isSelectable) {
+          topmostSelectable = current.parent;
+        }
+        current = current.parent;
+      }
+      
+      selectFromCanvas(topmostSelectable, e.shiftKey);
+      frameCameraOn(topmostSelectable);
     }
   }
 });
@@ -2288,8 +2321,22 @@ renderer.domElement.addEventListener("dblclick", e=>{
   let target = null;
   if (hits.length>0){
     let obj = hits[0].object;
+    // Walk up the hierarchy to find the topmost selectable object
     while (obj.parent && !obj.userData.isSelectable) obj = obj.parent;
-    if (obj.userData.isSelectable) target = obj;
+    
+    // If we found a selectable object, check if it's a child in a deeply nested group
+    if (obj.userData.isSelectable) {
+      // For deeply nested groups, we want to focus on the topmost group that contains this object
+      let topmostSelectable = obj;
+      let current = obj;
+      while (current.parent && current.parent !== canvasRoot) {
+        if (current.parent.userData.isSelectable) {
+          topmostSelectable = current.parent;
+        }
+        current = current.parent;
+      }
+      target = topmostSelectable;
+    }
   }
   if (target) { selectFromCanvas(target, false); frameCameraOn(target); }
   else resetCamera();
