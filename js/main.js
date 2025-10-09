@@ -67,6 +67,69 @@ scene.add(humanGuide);
 // ===== UI refs =====
 const loader = new THREE.GLTFLoader();
 const fileInput = document.getElementById("file");
+
+// ===== Model Cache System =====
+const modelCache = new Map(); // Cache for loaded models by URL/sReference
+const loadingPromises = new Map(); // Track ongoing loading operations
+
+// ===== URL and Model Loading Utilities =====
+function isUrl(sReference) {
+  return sReference && (sReference.startsWith('http://') || sReference.startsWith('https://'));
+}
+
+function getCacheKey(sReference) {
+  // Use the sReference as the cache key for both URLs and local files
+  return sReference || '';
+}
+
+async function loadModelFromReference(sReference) {
+  const cacheKey = getCacheKey(sReference);
+  
+  // Return cached model if available
+  if (modelCache.has(cacheKey)) {
+    return modelCache.get(cacheKey);
+  }
+  
+  // Return existing loading promise if already loading
+  if (loadingPromises.has(cacheKey)) {
+    return loadingPromises.get(cacheKey);
+  }
+  
+  // Create new loading promise
+  const loadingPromise = new Promise((resolve, reject) => {
+    if (isUrl(sReference)) {
+      // Load from URL
+      loader.load(
+        sReference,
+        (gltf) => {
+          const model = gltf.scene;
+          modelCache.set(cacheKey, model);
+          loadingPromises.delete(cacheKey);
+          resolve(model);
+        },
+        undefined,
+        (error) => {
+          console.error(`Failed to load model from URL: ${sReference}`, error);
+          loadingPromises.delete(cacheKey);
+          reject(error);
+        }
+      );
+    } else {
+      // For non-URL references, create a placeholder
+      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const material = new THREE.MeshBasicMaterial({ color: 0x888888 });
+      const placeholder = new THREE.Mesh(geometry, material);
+      placeholder.name = sReference ? sReference.replace(/\.[^/.]+$/, "") : "Placeholder";
+      
+      modelCache.set(cacheKey, placeholder);
+      loadingPromises.delete(cacheKey);
+      resolve(placeholder);
+    }
+  });
+  
+  loadingPromises.set(cacheKey, loadingPromise);
+  return loadingPromise;
+}
 const modelList = document.getElementById("modelList");
 const propertiesPanel = document.getElementById("properties");
 const snapCheckbox = document.getElementById("snap");
@@ -1070,19 +1133,30 @@ function fitModelToMaxHeight(obj, maxHeightMeters=HUMAN_HEIGHT){
 
 
 // ===== File loading (preserve original pivot & transform) =====
-fileInput.addEventListener("change", e=>{
+fileInput.addEventListener("change", async e=>{
   const file = e.target.files[0]; if(!file) return;
   const url = URL.createObjectURL(file);
-  loader.load(url, gltf=>{
+  
+  try {
+    const gltf = await new Promise((resolve, reject) => {
+      loader.load(url, resolve, undefined, reject);
+    });
+    
     const model = gltf.scene;
     model.userData.isSelectable = true;
     model.name = (file.name || ("Model "+modelCounter++)).replace(/\.[^/.]+$/, "");
+    
     // Track original source for export/reference reuse
+    const reference = model.name + ".glb";
     model.userData.sourceRef = {
       originalFileName: file.name,
       baseName: model.name,
-      reference: model.name + ".glb"
+      reference: reference
     };
+    
+    // Cache the model for potential reuse
+    modelCache.set(reference, model);
+    
     createBoxHelperFor(model);
 
     // Enforce maximum height relative to human guide
@@ -1096,7 +1170,12 @@ fileInput.addEventListener("change", e=>{
     frameCameraOn(model);
     saveState();
     updateJSONEditorFromScene();
-  });
+  } catch (error) {
+    console.error("Failed to load file:", error);
+  } finally {
+    // Clean up the object URL
+    URL.revokeObjectURL(url);
+  }
 });
 
 // ===== Attach / Detach =====
@@ -2778,7 +2857,7 @@ function updateJSONEditorFromScene() {
 }
 
 // Parse JSON and update scene
-function parseJSONAndUpdateScene(jsonText) {
+async function parseJSONAndUpdateScene(jsonText) {
   try {
     const data = JSON.parse(jsonText);
     
@@ -2805,9 +2884,9 @@ function parseJSONAndUpdateScene(jsonText) {
 
     // Process objects and create groups based on JSON hierarchy
     if (rootNode.aChildren && Array.isArray(rootNode.aChildren)) {
-      rootNode.aChildren.forEach((childNode, index) => {
-        processNodeHierarchically(childNode, canvasRoot, existingObjects);
-      });
+      for (const childNode of rootNode.aChildren) {
+        await processNodeHierarchically(childNode, canvasRoot, existingObjects);
+      }
     }
 
     // Remove objects that are no longer in the JSON
@@ -2848,11 +2927,11 @@ function parseJSONAndUpdateScene(jsonText) {
     }
 }
 
-function processNodeHierarchically(node, parent, existingObjects) {
+async function processNodeHierarchically(node, parent, existingObjects) {
   if (!node || !node.pResource) return null;
   
   // Create the object first
-  const obj = updateOrCreateObject(node, parent, existingObjects);
+  const obj = await updateOrCreateObject(node, parent, existingObjects);
   if (!obj) return null;
   
   // Check if this object has children
@@ -2992,9 +3071,8 @@ function processNodeHierarchically(node, parent, existingObjects) {
     }
     
     // Process children and add them to the group using EXACT JSON values
-    node.aChildren.forEach((childNode, index) => {
-      
-      const childObject = processNodeHierarchically(childNode, group, existingObjects);
+    for (const childNode of node.aChildren) {
+      const childObject = await processNodeHierarchically(childNode, group, existingObjects);
       if (childObject) {
         // Store original metadata for the child
         if (!childObject.userData) childObject.userData = {};
@@ -3071,7 +3149,7 @@ function processNodeHierarchically(node, parent, existingObjects) {
         group.add(childObject);
         
       }
-    });
+    }
     
     // Create helpers and add to sidebar
     createBoxHelperFor(group);
@@ -3116,7 +3194,7 @@ function collectObjectKeys(node, keys) {
   }
 }
 
-function updateOrCreateObject(node, parent, existingObjects) {
+async function updateOrCreateObject(node, parent, existingObjects) {
   if (!node || !node.pResource) return null;
 
 
@@ -3225,7 +3303,7 @@ function updateOrCreateObject(node, parent, existingObjects) {
       existingObjects.set(compositeKey, obj);
     } else {
       // Create completely new object
-      obj = createObjectFromNode(node);
+      obj = await createObjectFromNode(node);
       if (obj) {
         parent.add(obj);
         createBoxHelperFor(obj);
@@ -3318,62 +3396,98 @@ function updateObjectFromNode(obj, node, existingObjects) {
   updateAllVisuals(obj);
 }
 
-function createObjectFromNode(node) {
+async function createObjectFromNode(node) {
+  const sReference = node.pResource.sReference || '';
+  const objectName = node.pResource.sName || "Imported Object";
   
-  // Create a placeholder object for now
-  // In a full implementation, you would load the actual GLTF model
-  const geometry = new THREE.BoxGeometry(1, 1, 1);
-  const material = new THREE.MeshBasicMaterial({ color: 0x888888 });
-  const obj = new THREE.Mesh(geometry, material);
-  
-  obj.userData.isSelectable = true;
-  obj.userData.isImportedFromJSON = true; // Mark as imported from JSON to skip canvas clamping
-  obj.name = node.pResource.sName || "Imported Object";
+  try {
+    // Load the model from sReference (URL or local file)
+    const sourceModel = await loadModelFromReference(sReference);
+    
+    // Clone the model to create a new instance
+    const obj = sourceModel.clone(true);
+    
+    // Deep clone materials and geometries to avoid sharing
+    obj.traverse(node => {
+      if (node.isMesh) {
+        if (node.material) {
+          if (Array.isArray(node.material)) {
+            node.material = node.material.map(mat => mat.clone());
+          } else {
+            node.material = node.material.clone();
+          }
+        }
+        if (node.geometry) {
+          node.geometry = node.geometry.clone();
+        }
+      }
+    });
+    
+    obj.userData.isSelectable = true;
+    obj.userData.isImportedFromJSON = true; // Mark as imported from JSON to skip canvas clamping
+    obj.name = objectName;
 
-  // Always set source reference from JSON, even if empty
-  // This ensures consistent behavior for objects with shared sReference values
-  obj.userData.sourceRef = {
-    reference: node.pResource.sReference || '',
-    originalFileName: node.pResource.sReference || '',
-    baseName: node.pResource.sName || "Imported Object"
-  };
-
-  // Store bounding box from JSON if available
-  if (node.aBound && Array.isArray(node.aBound) && node.aBound.length >= 3) {
-    obj.userData.jsonBounds = {
-      size: new THREE.Vector3(node.aBound[0], node.aBound[1], node.aBound[2])
+    // Always set source reference from JSON, even if empty
+    // This ensures consistent behavior for objects with shared sReference values
+    obj.userData.sourceRef = {
+      reference: sReference,
+      originalFileName: sReference,
+      baseName: objectName
     };
+
+    // Store bounding box from JSON if available
+    if (node.aBound && Array.isArray(node.aBound) && node.aBound.length >= 3) {
+      obj.userData.jsonBounds = {
+        size: new THREE.Vector3(node.aBound[0], node.aBound[1], node.aBound[2])
+      };
+    }
+
+    // Apply transform
+    if (node.pTransform) {
+      if (node.pTransform.aPosition) {
+        obj.position.set(
+          node.pTransform.aPosition[0],
+          node.pTransform.aPosition[1],
+          node.pTransform.aPosition[2]
+        );
+      }
+      if (node.pTransform.aRotation) {
+        obj.quaternion.set(
+          node.pTransform.aRotation[0],
+          node.pTransform.aRotation[1],
+          node.pTransform.aRotation[2],
+          node.pTransform.aRotation[3]
+        );
+      }
+      if (node.pTransform.aScale) {
+        obj.scale.set(
+          node.pTransform.aScale[0],
+          node.pTransform.aScale[1],
+          node.pTransform.aScale[2]
+        );
+      }
+    }
+
+    return obj;
+  } catch (error) {
+    console.error(`Failed to create object from node with sReference: ${sReference}`, error);
+    
+    // Create a fallback placeholder object
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red to indicate error
+    const obj = new THREE.Mesh(geometry, material);
+    
+    obj.userData.isSelectable = true;
+    obj.userData.isImportedFromJSON = true;
+    obj.name = `${objectName} (Failed to Load)`;
+    obj.userData.sourceRef = {
+      reference: sReference,
+      originalFileName: sReference,
+      baseName: objectName
+    };
+    
+    return obj;
   }
-
-  // Apply transform
-  if (node.pTransform) {
-    if (node.pTransform.aPosition) {
-      obj.position.set(
-        node.pTransform.aPosition[0],
-        node.pTransform.aPosition[1],
-        node.pTransform.aPosition[2]
-      );
-    }
-    if (node.pTransform.aRotation) {
-      obj.quaternion.set(
-        node.pTransform.aRotation[0],
-        node.pTransform.aRotation[1],
-        node.pTransform.aRotation[2],
-        node.pTransform.aRotation[3]
-      );
-    }
-    if (node.pTransform.aScale) {
-      obj.scale.set(
-        node.pTransform.aScale[0],
-        node.pTransform.aScale[1],
-        node.pTransform.aScale[2]
-      );
-    }
-  } else {
-  }
-
-
-  return obj;
 }
 
 // JSON editor event listeners
@@ -3390,8 +3504,8 @@ if (jsonEditor) {
   });
 
   // Apply changes button
-  applyChanges.addEventListener('click', () => {
-    parseJSONAndUpdateScene(jsonEditor.value);
+  applyChanges.addEventListener('click', async () => {
+    await parseJSONAndUpdateScene(jsonEditor.value);
   });
 
   // Initial JSON update
