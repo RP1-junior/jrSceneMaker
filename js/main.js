@@ -1122,18 +1122,6 @@ function createHumanGuide(heightMeters=HUMAN_HEIGHT){
   return group;
 }
 
-// Scale down any model so its height does not exceed HUMAN_HEIGHT
-function fitModelToMaxHeight(obj, maxHeightMeters=HUMAN_HEIGHT){
-  const box = new THREE.Box3().setFromObject(obj);
-  if (box.isEmpty()) return;
-  const size = box.getSize(new THREE.Vector3());
-  if (size.y <= 0) return;
-  if (size.y > maxHeightMeters) {
-    const k = maxHeightMeters / size.y;
-    obj.scale.multiplyScalar(k);
-  }
-}
-
 
 // ===== File loading (preserve original pivot & transform) =====
 fileInput.addEventListener("change", async e=>{
@@ -1162,8 +1150,6 @@ fileInput.addEventListener("change", async e=>{
     
     createBoxHelperFor(model);
 
-    // Enforce maximum height relative to human guide
-    fitModelToMaxHeight(model, HUMAN_HEIGHT);
     canvasRoot.add(model);
 
     addModelToList(model, model.name);
