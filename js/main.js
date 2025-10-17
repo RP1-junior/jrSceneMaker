@@ -177,8 +177,7 @@ function getBox(obj){
   // Use JSON bounding box if available (for imported objects)
   if (obj.userData?.jsonBounds) {
     const box = new THREE.Box3();
-    const center = new THREE.Vector3();
-    obj.getWorldPosition(center);
+    const center = obj.position.clone(); // Use local position
     box.setFromCenterAndSize(center, obj.userData.jsonBounds.size);
     return box;
   }
@@ -217,7 +216,7 @@ function updateAllVisuals(obj){
   
   if(!obj) return;
 
-  // Skip canvas clamping for objects imported from JSON (they should use exact world positions)
+  // Skip canvas clamping for objects imported from JSON (they should use exact local positions)
   if (!obj.userData?.isImportedFromJSON) {
     // Apply canvas clamp restrictions to any object being transformed (including nested objects)
     clampToCanvasRecursive(obj);
@@ -388,25 +387,18 @@ function updateModelProperties(model){
   const box = getBox(model);
   const size = box.getSize(new THREE.Vector3());
 
-  // Get world position for accurate meter measurements
-  const worldPosition = new THREE.Vector3();
-  model.getWorldPosition(worldPosition);
-
-  // Get world scale
-  const worldScale = new THREE.Vector3();
-  model.getWorldScale(worldScale);
-
-  // Get world quaternion for accurate rotation
-  const worldQuaternion = new THREE.Quaternion();
-  model.getWorldQuaternion(worldQuaternion);
+  // Use local transforms for consistent local positioning
+  const localPosition = model.position.clone();
+  const localScale = model.scale.clone();
+  const localQuaternion = model.quaternion.clone();
 
   // Calculate triangle count
   const triangleCount = getTriangleCount(model);
 
   model.userData.properties = {
-    pos: worldPosition,
-    scl: worldScale,
-    rot: worldQuaternion.clone(),
+    pos: localPosition,
+    scl: localScale,
+    rot: localQuaternion.clone(),
     size: size.clone(),
     triangles: triangleCount
   };
@@ -1182,6 +1174,14 @@ function groupSelectedObjects(){
   group.userData.isEditorGroup = true;
   group.name = parentObj.name || "Attached " + Date.now();
 
+  // Store parent object's world transform to preserve visual position
+  const parentWorldPosition = new THREE.Vector3();
+  const parentWorldQuaternion = new THREE.Quaternion();
+  const parentWorldScale = new THREE.Vector3();
+  parentObj.getWorldPosition(parentWorldPosition);
+  parentObj.getWorldQuaternion(parentWorldQuaternion);
+  parentObj.getWorldScale(parentWorldScale);
+
   // Copy parent object's transform to the group
   group.position.copy(parentObj.position);
   group.quaternion.copy(parentObj.quaternion);
@@ -1191,10 +1191,27 @@ function groupSelectedObjects(){
   scene.remove(parentObj);
   group.add(parentObj);
 
-  // Reset parent object's transform relative to group
-  parentObj.position.set(0, 0, 0);
-  parentObj.quaternion.set(0, 0, 0, 1);
-  parentObj.scale.set(1, 1, 1);
+  // Calculate local transform to preserve parent object's world position
+  scene.updateMatrixWorld(true);
+  const groupWorldMatrix = new THREE.Matrix4();
+  group.updateMatrixWorld(true);
+  groupWorldMatrix.copy(group.matrixWorld);
+
+  const parentWorldMatrix = new THREE.Matrix4();
+  parentWorldMatrix.compose(parentWorldPosition, parentWorldQuaternion, parentWorldScale);
+
+  const localMatrix = new THREE.Matrix4();
+  localMatrix.copy(groupWorldMatrix).invert().multiply(parentWorldMatrix);
+
+  const localPosition = new THREE.Vector3();
+  const localQuaternion = new THREE.Quaternion();
+  const localScale = new THREE.Vector3();
+  localMatrix.decompose(localPosition, localQuaternion, localScale);
+
+  // Apply calculated local transform to preserve visual position
+  parentObj.position.copy(localPosition);
+  parentObj.quaternion.copy(localQuaternion);
+  parentObj.scale.copy(localScale);
 
   // Clean up parent object's sidebar representation
   if (parentObj.userData.listItem) {
@@ -1254,7 +1271,7 @@ function ungroupSelectedObject(){
   while (group.children.length > 0) {
     const child = group.children[0];
 
-    // Move child to the group's parent (preserving world transform)
+    // Move child to the group's parent (preserving local transform)
     if (groupParent === scene) {
       canvasRoot.attach(child);
     } else {
@@ -1279,7 +1296,7 @@ function ungroupSelectedObject(){
     delete child.userData?.originalListType;
     delete child.userData?.originalName;
 
-    // Update visuals without clamping to preserve world positions during detaching
+    // Update visuals without clamping to preserve local positions during detaching
     updateModelProperties(child);
     updatePropertiesPanel(child);
     updateBoxHelper(child);
@@ -1330,7 +1347,7 @@ function detachFromGroup(obj, skipSelection = false){
     setParentHelperVisible(parentGroup, false);
   }
   
-  // Move object to the parent group's parent (preserving world transform)
+  // Move object to the parent group's parent (preserving local transform)
   const grandParent = parentGroup.parent || scene;
   const wasInParentGroup = grandParent && grandParent !== scene && grandParent.userData?.isEditorGroup;
   
@@ -1357,7 +1374,7 @@ function detachFromGroup(obj, skipSelection = false){
   delete obj.userData?.originalListType;
   delete obj.userData?.originalName;
   
-  // Update visuals without clamping to preserve world positions during detaching
+  // Update visuals without clamping to preserve local positions during detaching
   updateModelProperties(obj);
   updatePropertiesPanel(obj);
   updateBoxHelper(obj);
@@ -1695,6 +1712,14 @@ function createGroupFromDragDrop(draggedObj, targetObj) {
   group.userData.isEditorGroup = true;
   group.name = targetObj.name || "Attached " + Date.now();
 
+  // Store target object's world transform to preserve visual position
+  const targetWorldPosition = new THREE.Vector3();
+  const targetWorldQuaternion = new THREE.Quaternion();
+  const targetWorldScale = new THREE.Vector3();
+  targetObj.getWorldPosition(targetWorldPosition);
+  targetObj.getWorldQuaternion(targetWorldQuaternion);
+  targetObj.getWorldScale(targetWorldScale);
+
   // Copy target object's transform to the group
   group.position.copy(targetObj.position);
   group.quaternion.copy(targetObj.quaternion);
@@ -1712,10 +1737,27 @@ function createGroupFromDragDrop(draggedObj, targetObj) {
   }
   group.add(targetObj);
 
-  // Reset target object's transform relative to group
-  targetObj.position.set(0, 0, 0);
-  targetObj.quaternion.set(0, 0, 0, 1);
-  targetObj.scale.set(1, 1, 1);
+  // Calculate local transform to preserve target object's world position
+  scene.updateMatrixWorld(true);
+  const groupWorldMatrix = new THREE.Matrix4();
+  group.updateMatrixWorld(true);
+  groupWorldMatrix.copy(group.matrixWorld);
+
+  const targetWorldMatrix = new THREE.Matrix4();
+  targetWorldMatrix.compose(targetWorldPosition, targetWorldQuaternion, targetWorldScale);
+
+  const localMatrix = new THREE.Matrix4();
+  localMatrix.copy(groupWorldMatrix).invert().multiply(targetWorldMatrix);
+
+  const localPosition = new THREE.Vector3();
+  const localQuaternion = new THREE.Quaternion();
+  const localScale = new THREE.Vector3();
+  localMatrix.decompose(localPosition, localQuaternion, localScale);
+
+  // Apply calculated local transform to preserve visual position
+  targetObj.position.copy(localPosition);
+  targetObj.quaternion.copy(localQuaternion);
+  targetObj.scale.copy(localScale);
 
   // Clean up target object's sidebar representation
   if (targetObj.userData.listItem) {
@@ -1727,14 +1769,14 @@ function createGroupFromDragDrop(draggedObj, targetObj) {
   }
 
   // Add group to canvas root or parent FIRST (before adding dragged object)
-  // This ensures the group has a valid world matrix for transform calculations
+  // This ensures the group has a valid transform for local calculations
   if (wasInGroup) {
     targetParent.add(group);
   } else {
     canvasRoot.add(group);
   }
 
-  // Now add dragged object to the group (world transform will be preserved correctly)
+  // Now add dragged object to the group (local transform will be preserved correctly)
   addObjectToGroup(draggedObj, group);
 
   // Update visuals and sidebar
@@ -1781,13 +1823,13 @@ function addObjectToExistingGroup(obj, group) {
     canvasRoot.remove(obj);
   }
 
-  // Add to the target group (this will handle sidebar cleanup and world transform preservation)
+  // Add to the target group (this will handle sidebar cleanup and local transform preservation)
   addObjectToGroup(obj, group);
 
   // Rebuild the group's sidebar
   rebuildGroupSidebar(group);
 
-  // Update visuals without clamping to preserve world positions
+  // Update visuals without clamping to preserve local positions
   updateModelProperties(group);
   updatePropertiesPanel(group);
   updateBoxHelper(group);
@@ -1825,8 +1867,8 @@ function addObjectToGroup(obj, group) {
     delete obj.userData.listItem;
   }
 
-  // --- World transform preservation logic ---
-  // 1. Store world transform before moving
+  // --- World position preservation logic ---
+  // Store the object's world transform before grouping to preserve visual position
   const worldPosition = new THREE.Vector3();
   const worldQuaternion = new THREE.Quaternion();
   const worldScale = new THREE.Vector3();
@@ -1834,10 +1876,10 @@ function addObjectToGroup(obj, group) {
   obj.getWorldQuaternion(worldQuaternion);
   obj.getWorldScale(worldScale);
 
-  // 2. Ensure the group and all ancestors are in the scene and matrices are up-to-date
+  // Ensure the group and all ancestors are in the scene and matrices are up-to-date
   scene.updateMatrixWorld(true);
 
-  // 3. Calculate the correct local transform
+  // Calculate the correct local transform to preserve world position
   const groupWorldMatrix = new THREE.Matrix4();
   group.updateMatrixWorld(true);
   groupWorldMatrix.copy(group.matrixWorld);
@@ -1848,25 +1890,19 @@ function addObjectToGroup(obj, group) {
   const localMatrix = new THREE.Matrix4();
   localMatrix.copy(groupWorldMatrix).invert().multiply(targetWorldMatrix);
 
-  // 4. Decompose and set the local transform
+  // Decompose and set the local transform
   const localPosition = new THREE.Vector3();
   const localQuaternion = new THREE.Quaternion();
   const localScale = new THREE.Vector3();
   localMatrix.decompose(localPosition, localQuaternion, localScale);
 
+  // Apply the calculated local transform
   obj.position.copy(localPosition);
   obj.quaternion.copy(localQuaternion);
   obj.scale.copy(localScale);
 
-  // 5. Now add to group - the transform should already be correct
+  // Add to group - the object maintains its visual world position
   group.add(obj);
-
-  // (Optional) Verify the world transform is preserved
-  // const verifyWorldPosition = new THREE.Vector3();
-  // obj.getWorldPosition(verifyWorldPosition);
-  // if (!worldPosition.equals(verifyWorldPosition, 0.001)) {
-  //   console.warn('World transform not preserved:', worldPosition, verifyWorldPosition);
-  // }
 }
 
 function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
@@ -1886,6 +1922,14 @@ function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
   group.userData.isEditorGroup = true;
   group.name = targetObj.name || "Attached " + Date.now();
 
+  // Store target object's world transform to preserve visual position
+  const targetWorldPosition = new THREE.Vector3();
+  const targetWorldQuaternion = new THREE.Quaternion();
+  const targetWorldScale = new THREE.Vector3();
+  targetObj.getWorldPosition(targetWorldPosition);
+  targetObj.getWorldQuaternion(targetWorldQuaternion);
+  targetObj.getWorldScale(targetWorldScale);
+
   // Copy target object's transform to the group
   group.position.copy(targetObj.position);
   group.quaternion.copy(targetObj.quaternion);
@@ -1903,10 +1947,27 @@ function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
   }
   group.add(targetObj);
 
-  // Reset target object's transform relative to group
-  targetObj.position.set(0, 0, 0);
-  targetObj.quaternion.set(0, 0, 0, 1);
-  targetObj.scale.set(1, 1, 1);
+  // Calculate local transform to preserve target object's world position
+  scene.updateMatrixWorld(true);
+  const groupWorldMatrix = new THREE.Matrix4();
+  group.updateMatrixWorld(true);
+  groupWorldMatrix.copy(group.matrixWorld);
+
+  const targetWorldMatrix = new THREE.Matrix4();
+  targetWorldMatrix.compose(targetWorldPosition, targetWorldQuaternion, targetWorldScale);
+
+  const localMatrix = new THREE.Matrix4();
+  localMatrix.copy(groupWorldMatrix).invert().multiply(targetWorldMatrix);
+
+  const localPosition = new THREE.Vector3();
+  const localQuaternion = new THREE.Quaternion();
+  const localScale = new THREE.Vector3();
+  localMatrix.decompose(localPosition, localQuaternion, localScale);
+
+  // Apply calculated local transform to preserve visual position
+  targetObj.position.copy(localPosition);
+  targetObj.quaternion.copy(localQuaternion);
+  targetObj.scale.copy(localScale);
 
   // Clean up target object's sidebar representation
   if (targetObj.userData.listItem) {
@@ -1918,14 +1979,14 @@ function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
   }
 
   // Add group to canvas root or parent FIRST (before adding dragged objects)
-  // This ensures the group has a valid world matrix for transform calculations
+  // This ensures the group has a valid transform for local calculations
   if (wasInGroup) {
     targetParent.add(group);
   } else {
     canvasRoot.add(group);
   }
 
-  // Now add all dragged objects to the group (world transforms will be preserved correctly)
+  // Now add all dragged objects to the group (local transforms will be preserved correctly)
   draggedObjects.forEach(draggedObj => {
     addObjectToGroup(draggedObj, group);
   });
@@ -2552,6 +2613,9 @@ transform.addEventListener("objectChange", ()=>{
     // For translate and scale modes, use full updateAllVisuals (including clamping)
     updateAllVisuals(selectedObject);
   }
+
+  // Update JSON editor to reflect local transform values for all objects
+  updateJSONEditorFromScene();
 });
 
 // ===== Undo =====
@@ -2791,17 +2855,10 @@ function buildNode(obj){
   const box = getBox(obj); // Use the updated getBox function that handles Object Root properly
   const size = box.getSize(new THREE.Vector3());
 
-  // Get world position for accurate meter measurements
-  const worldPosition = new THREE.Vector3();
-  obj.getWorldPosition(worldPosition);
-
-  // Get world quaternion for accurate rotation
-  const worldQuaternion = new THREE.Quaternion();
-  obj.getWorldQuaternion(worldQuaternion);
-
-  // Get world scale
-  const worldScale = new THREE.Vector3();
-  obj.getWorldScale(worldScale);
+  // Use local transforms for all objects to show relative positioning
+  const localPosition = obj.position.clone();
+  const localQuaternion = obj.quaternion.clone();
+  const localScale = obj.scale.clone();
 
   const rawName = (obj.name && obj.name.length) ? obj.name :
     (obj.userData.listItem ? obj.userData.listItem.textContent : "FILE");
@@ -2816,9 +2873,9 @@ function buildNode(obj){
         : (sourceRef?.reference || (baseName + ".glb"))
     },
     pTransform: {
-      aPosition: [worldPosition.x, worldPosition.y, worldPosition.z],
-      aRotation: [worldQuaternion.x, worldQuaternion.y, worldQuaternion.z, worldQuaternion.w],
-      aScale: [worldScale.x, worldScale.y, worldScale.z]
+      aPosition: [localPosition.x, localPosition.y, localPosition.z],
+      aRotation: [localQuaternion.x, localQuaternion.y, localQuaternion.z, localQuaternion.w],
+      aScale: [localScale.x, localScale.y, localScale.z]
     },
     aBound: [size.x, size.y, size.z],
     aChildren: []
@@ -2931,7 +2988,10 @@ async function parseJSONAndUpdateScene(jsonText) {
     }
     
     existingObjects.forEach((obj, key) => {
-      if (!jsonObjectKeys.has(key)) {
+      // Check if this object should be kept by looking at the base composite key
+      // (without any number suffix) to see if it exists in the JSON
+      const baseKey = key.split('|').slice(0, 2).join('|'); // Remove any number suffix
+      if (!jsonObjectKeys.has(baseKey)) {
         cleanupObject(obj);
         if (obj.parent) obj.parent.remove(obj);
       }
@@ -3020,7 +3080,7 @@ async function processNodeHierarchically(node, parent, existingObjects) {
       group.name = obj.name || "Attached " + Date.now();
       
       
-      // Use EXACT JSON transform values for the group (world positions)
+      // Use local transform values directly from JSON
       if (node.pTransform) {
         if (node.pTransform.aPosition) {
           group.position.set(
@@ -3044,7 +3104,6 @@ async function processNodeHierarchically(node, parent, existingObjects) {
             node.pTransform.aScale[2]
           );
         }
-      } else {
       }
       
       // Store bounding box from JSON if available
@@ -3078,29 +3137,8 @@ async function processNodeHierarchically(node, parent, existingObjects) {
       parent.add(group);
       
       
-      // Force matrix update to ensure world positions are correct
+      // Force matrix update to ensure transforms are applied
       scene.updateMatrixWorld(true);
-      
-      
-      // CRITICAL FIX: Ensure the group's world position matches the JSON aPosition
-      // If it doesn't match, adjust the group's local position to compensate
-      const currentWorldPosition = group.getWorldPosition(new THREE.Vector3());
-      const expectedWorldPosition = new THREE.Vector3(
-        node.pTransform.aPosition[0],
-        node.pTransform.aPosition[1],
-        node.pTransform.aPosition[2]
-      );
-      
-      if (!currentWorldPosition.equals(expectedWorldPosition)) {
-        
-        // Calculate the correction needed
-        const correction = expectedWorldPosition.clone().sub(currentWorldPosition);
-        group.position.add(correction);
-        
-        
-        // Force another matrix update
-        scene.updateMatrixWorld(true);
-      }
     }
     
     // Process children and add them to the group using EXACT JSON values
@@ -3112,9 +3150,9 @@ async function processNodeHierarchically(node, parent, existingObjects) {
         childObject.userData.originalListType = childObject.userData.listType || (childObject instanceof THREE.Group ? "group" : "model");
         childObject.userData.originalName = childObject.name;
         
-        // Store expected world position from JSON for comparison
+        // Store expected local position from JSON for comparison
         if (childNode.pTransform?.aPosition) {
-          childObject.userData.expectedWorldPosition = childNode.pTransform.aPosition;
+          childObject.userData.expectedLocalPosition = childNode.pTransform.aPosition;
         }
         
         // Clean up existing helpers and sidebar representation
@@ -3129,25 +3167,15 @@ async function processNodeHierarchically(node, parent, existingObjects) {
         }
         
         
-        // Use EXACT JSON transform values for child objects (world positions)
-        // But convert them to local positions relative to the group
+        // Use local transform values directly from JSON
         if (childNode.pTransform) {
-          // Get the child's world position from JSON
-          const childWorldPosition = new THREE.Vector3(
-            childNode.pTransform.aPosition[0],
-            childNode.pTransform.aPosition[1], 
-            childNode.pTransform.aPosition[2]
-          );
-          
-          // Get the group's world position
-          const groupWorldPosition = new THREE.Vector3();
-          group.getWorldPosition(groupWorldPosition);
-          
-          // Calculate local position relative to group
-          const localPosition = childWorldPosition.clone().sub(groupWorldPosition);
-          
-          childObject.position.copy(localPosition);
-          
+          if (childNode.pTransform.aPosition) {
+            childObject.position.set(
+              childNode.pTransform.aPosition[0],
+              childNode.pTransform.aPosition[1],
+              childNode.pTransform.aPosition[2]
+            );
+          }
           if (childNode.pTransform.aRotation) {
             childObject.quaternion.set(
               childNode.pTransform.aRotation[0],
@@ -3163,7 +3191,6 @@ async function processNodeHierarchically(node, parent, existingObjects) {
               childNode.pTransform.aScale[2]
             );
           }
-        } else {
         }
         
         // Store bounding box from JSON if available
@@ -3230,12 +3257,22 @@ function collectObjectKeys(node, keys) {
 async function updateOrCreateObject(node, parent, existingObjects) {
   if (!node || !node.pResource) return null;
 
-
   const objectName = node.pResource.sName || "Imported Object";
   const sReference = node.pResource.sReference || '';
-  const compositeKey = `${objectName}|${sReference}`;
   
-  // First check if we already have an object with this exact composite key
+  // Create a unique composite key that allows duplicate sName values
+  // Use a combination of sName, sReference, and a unique identifier
+  let compositeKey = `${objectName}|${sReference}`;
+  
+  // If an object with this composite key already exists, add a unique suffix
+  let counter = 1;
+  let originalCompositeKey = compositeKey;
+  while (existingObjects.has(compositeKey)) {
+    compositeKey = `${originalCompositeKey}|${counter}`;
+    counter++;
+  }
+  
+  // Check if we already have an object with this exact composite key
   let obj = existingObjects.get(compositeKey);
   
   if (obj) {
@@ -3264,7 +3301,8 @@ async function updateOrCreateObject(node, parent, existingObjects) {
     if (modelToReuse) {
       // Reuse the existing model but create a new object instance
       obj = modelToReuse.clone(true);
-      obj.name = objectName;
+      // Use the unique composite key to generate a unique name
+      obj.name = counter > 1 ? `${objectName} (${counter - 1})` : objectName;
       
       // Deep clone materials and geometries to avoid sharing
       obj.traverse(node => {
@@ -3338,6 +3376,9 @@ async function updateOrCreateObject(node, parent, existingObjects) {
       // Create completely new object
       obj = await createObjectFromNode(node);
       if (obj) {
+        // Use the unique composite key to generate a unique name
+        obj.name = counter > 1 ? `${objectName} (${counter - 1})` : objectName;
+        
         parent.add(obj);
         createBoxHelperFor(obj);
         addModelToList(obj, obj.name);
