@@ -2961,12 +2961,15 @@ async function parseJSONAndUpdateScene(jsonText) {
       return;
     }
 
-    // Create a map of existing objects by composite key (name + sReference) for reference
+    // Create a map of existing objects by composite key (name + sReference + uniqueId) for reference
     const existingObjects = new Map();
     canvasRoot.traverse(obj => {
       if (obj.userData?.isSelectable && obj !== canvasRoot && obj.name) {
         const sReference = obj.userData?.sourceRef?.reference || '';
-        const compositeKey = `${obj.name}|${sReference}`;
+        const uniqueId = obj.userData?.uniqueInternalId || '';
+        const compositeKey = uniqueId ? 
+          `${obj.name}|${sReference}|${uniqueId}` :
+          `${obj.name}|${sReference}`;
         existingObjects.set(compositeKey, obj);
       }
     });
@@ -2989,8 +2992,8 @@ async function parseJSONAndUpdateScene(jsonText) {
     
     existingObjects.forEach((obj, key) => {
       // Check if this object should be kept by looking at the base composite key
-      // (without any number suffix) to see if it exists in the JSON
-      const baseKey = key.split('|').slice(0, 2).join('|'); // Remove any number suffix
+      // (without unique identifier) to see if it exists in the JSON
+      const baseKey = key.split('|').slice(0, 2).join('|'); // Remove unique identifier suffix
       if (!jsonObjectKeys.has(baseKey)) {
         cleanupObject(obj);
         if (obj.parent) obj.parent.remove(obj);
@@ -3231,8 +3234,10 @@ async function processNodeHierarchically(node, parent, existingObjects) {
 function collectObjectKeysRecursively(node, keys) {
   if (node && node.pResource && node.pResource.sName) {
     const sReference = node.pResource.sReference || '';
-    const compositeKey = `${node.pResource.sName}|${sReference}`;
-    keys.add(compositeKey);
+    // Use base composite key (without unique identifier) for JSON key collection
+    // This allows the cleanup logic to work with the original sName|sReference format
+    const baseCompositeKey = `${node.pResource.sName}|${sReference}`;
+    keys.add(baseCompositeKey);
   }
   if (node.aChildren && Array.isArray(node.aChildren)) {
     node.aChildren.forEach(childNode => {
@@ -3260,17 +3265,12 @@ async function updateOrCreateObject(node, parent, existingObjects) {
   const objectName = node.pResource.sName || "Imported Object";
   const sReference = node.pResource.sReference || '';
   
-  // Create a unique composite key that allows duplicate sName values
-  // Use a combination of sName, sReference, and a unique identifier
-  let compositeKey = `${objectName}|${sReference}`;
+  // Generate a unique internal identifier for this object instance
+  // This allows multiple objects with the same sName and sReference to coexist
+  const uniqueId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
-  // If an object with this composite key already exists, add a unique suffix
-  let counter = 1;
-  let originalCompositeKey = compositeKey;
-  while (existingObjects.has(compositeKey)) {
-    compositeKey = `${originalCompositeKey}|${counter}`;
-    counter++;
-  }
+  // Create a composite key using sName, sReference, and the unique internal identifier
+  const compositeKey = `${objectName}|${sReference}|${uniqueId}`;
   
   // Check if we already have an object with this exact composite key
   let obj = existingObjects.get(compositeKey);
@@ -3301,8 +3301,8 @@ async function updateOrCreateObject(node, parent, existingObjects) {
     if (modelToReuse) {
       // Reuse the existing model but create a new object instance
       obj = modelToReuse.clone(true);
-      // Use the unique composite key to generate a unique name
-      obj.name = counter > 1 ? `${objectName} (${counter - 1})` : objectName;
+      // Use the original object name (no visible suffixes)
+      obj.name = objectName;
       
       // Deep clone materials and geometries to avoid sharing
       obj.traverse(node => {
@@ -3324,6 +3324,7 @@ async function updateOrCreateObject(node, parent, existingObjects) {
       obj.userData = {
         isSelectable: true,
         isImportedFromJSON: true, // Mark as imported from JSON to skip canvas clamping
+        uniqueInternalId: uniqueId, // Store the unique internal identifier
         sourceRef: {
           reference: sReference,
           originalFileName: sReference,
@@ -3376,8 +3377,12 @@ async function updateOrCreateObject(node, parent, existingObjects) {
       // Create completely new object
       obj = await createObjectFromNode(node);
       if (obj) {
-        // Use the unique composite key to generate a unique name
-        obj.name = counter > 1 ? `${objectName} (${counter - 1})` : objectName;
+        // Use the original object name (no visible suffixes)
+        obj.name = objectName;
+        
+        // Add the unique internal identifier to userData
+        if (!obj.userData) obj.userData = {};
+        obj.userData.uniqueInternalId = uniqueId;
         
         parent.add(obj);
         createBoxHelperFor(obj);
@@ -3397,7 +3402,11 @@ async function updateOrCreateObject(node, parent, existingObjects) {
 function updateObjectFromNode(obj, node, existingObjects) {
   
   // Store the old composite key before making changes
-  const oldCompositeKey = `${obj.name}|${obj.userData.sourceRef?.reference || ''}`;
+  // Include the unique identifier if it exists
+  const uniqueId = obj.userData?.uniqueInternalId || '';
+  const oldCompositeKey = uniqueId ? 
+    `${obj.name}|${obj.userData.sourceRef?.reference || ''}|${uniqueId}` :
+    `${obj.name}|${obj.userData.sourceRef?.reference || ''}`;
   
   // Mark as imported from JSON to skip canvas clamping
   obj.userData.isImportedFromJSON = true;
@@ -3433,7 +3442,9 @@ function updateObjectFromNode(obj, node, existingObjects) {
 
   // Update the existingObjects map if the composite key changed
   if (existingObjects) {
-    const newCompositeKey = `${obj.name}|${obj.userData.sourceRef?.reference || ''}`;
+    const newCompositeKey = uniqueId ? 
+      `${obj.name}|${obj.userData.sourceRef?.reference || ''}|${uniqueId}` :
+      `${obj.name}|${obj.userData.sourceRef?.reference || ''}`;
     if (oldCompositeKey !== newCompositeKey) {
       existingObjects.delete(oldCompositeKey);
       existingObjects.set(newCompositeKey, obj);
