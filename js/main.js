@@ -1737,6 +1737,14 @@ function createGroupFromDragDrop(draggedObj, targetObj) {
   }
   group.add(targetObj);
 
+  // Add group to canvas root or parent FIRST (before matrix calculations)
+  // This ensures the group has a valid transform for local calculations
+  if (wasInGroup) {
+    targetParent.add(group);
+  } else {
+    canvasRoot.add(group);
+  }
+
   // Calculate local transform to preserve target object's world position
   scene.updateMatrixWorld(true);
   const groupWorldMatrix = new THREE.Matrix4();
@@ -1766,14 +1774,6 @@ function createGroupFromDragDrop(draggedObj, targetObj) {
     li.remove();
     if(next && next.tagName==="UL") next.remove();
     delete targetObj.userData.listItem;
-  }
-
-  // Add group to canvas root or parent FIRST (before adding dragged object)
-  // This ensures the group has a valid transform for local calculations
-  if (wasInGroup) {
-    targetParent.add(group);
-  } else {
-    canvasRoot.add(group);
   }
 
   // Now add dragged object to the group (local transform will be preserved correctly)
@@ -1810,21 +1810,18 @@ function addObjectToExistingGroup(obj, group) {
     return;
   }
 
-  // Remove object from its current parent
+  // Store reference to original parent for cleanup
   const objParent = obj.parent;
-  if (objParent) {
-    objParent.remove(obj);
-    if (objParent.userData?.isEditorGroup) {
-      rebuildGroupSidebar(objParent);
-      // Check if parent group should be cleaned up after removing the object
-      cleanupEmptyParentGroups(objParent);
-    }
-  } else {
-    canvasRoot.remove(obj);
-  }
-
-  // Add to the target group (this will handle sidebar cleanup and local transform preservation)
+  
+  // Add to the target group (this will handle parent removal, sidebar cleanup and local transform preservation)
   addObjectToGroup(obj, group);
+  
+  // Handle cleanup of original parent if it was a group
+  if (objParent && objParent.userData?.isEditorGroup) {
+    rebuildGroupSidebar(objParent);
+    // Check if parent group should be cleaned up after removing the object
+    cleanupEmptyParentGroups(objParent);
+  }
 
   // Rebuild the group's sidebar
   rebuildGroupSidebar(group);
@@ -1876,6 +1873,15 @@ function addObjectToGroup(obj, group) {
   obj.getWorldQuaternion(worldQuaternion);
   obj.getWorldScale(worldScale);
 
+  // Remove object from its current parent first
+  const objParent = obj.parent;
+  if (objParent) {
+    objParent.remove(obj);
+  }
+
+  // Add object to group to establish proper parent-child relationship
+  group.add(obj);
+
   // Ensure the group and all ancestors are in the scene and matrices are up-to-date
   scene.updateMatrixWorld(true);
 
@@ -1900,9 +1906,6 @@ function addObjectToGroup(obj, group) {
   obj.position.copy(localPosition);
   obj.quaternion.copy(localQuaternion);
   obj.scale.copy(localScale);
-
-  // Add to group - the object maintains its visual world position
-  group.add(obj);
 }
 
 function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
@@ -1947,6 +1950,14 @@ function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
   }
   group.add(targetObj);
 
+  // Add group to canvas root or parent FIRST (before matrix calculations)
+  // This ensures the group has a valid transform for local calculations
+  if (wasInGroup) {
+    targetParent.add(group);
+  } else {
+    canvasRoot.add(group);
+  }
+
   // Calculate local transform to preserve target object's world position
   scene.updateMatrixWorld(true);
   const groupWorldMatrix = new THREE.Matrix4();
@@ -1976,14 +1987,6 @@ function createGroupFromMultipleDragDrop(draggedObjects, targetObj) {
     li.remove();
     if(next && next.tagName==="UL") next.remove();
     delete targetObj.userData.listItem;
-  }
-
-  // Add group to canvas root or parent FIRST (before adding dragged objects)
-  // This ensures the group has a valid transform for local calculations
-  if (wasInGroup) {
-    targetParent.add(group);
-  } else {
-    canvasRoot.add(group);
   }
 
   // Now add all dragged objects to the group (local transforms will be preserved correctly)
