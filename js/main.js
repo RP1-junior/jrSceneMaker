@@ -2275,7 +2275,7 @@ canvasSizeInput.addEventListener("change", e=>{
   }
 
   // Update JSON editor
-  updateJSONEditorFromScene();
+  updateJSONEditor();
 });
 
 snapCheckbox.addEventListener("change", e=>{
@@ -2964,6 +2964,77 @@ async function parseJSONAndUpdateScene(jsonText) {
       return;
     }
 
+    // Handle Object Root aBound changes - update canvas size if aBound is provided
+    if (rootNode.aBound && Array.isArray(rootNode.aBound) && rootNode.aBound.length >= 3) {
+      const newCanvasSize = rootNode.aBound[0]; // Use X dimension as canvas size
+      if (newCanvasSize !== groundSize) {
+        groundSize = newCanvasSize;
+        
+        // Update UI input field
+        canvasSizeInput.value = groundSize;
+        
+        // Update grid
+        scene.remove(grid);
+        grid = new THREE.GridHelper(groundSize, groundSize, 0x888888, 0x444444);
+        grid.userData.isSelectable = false;
+        scene.add(grid);
+        
+        // Update ruler
+        if (ruler) scene.remove(ruler);
+        if (loadedFont) {
+          ruler = createRuler(groundSize, 1);
+          addRulerLabels(ruler, groundSize, 1, loadedFont);
+          ruler.userData.isSelectable = false;
+          scene.add(ruler);
+        }
+        
+        // Update camera orbit controls
+        orbit.maxDistance = groundSize * 1.5;
+        
+        // Update selected objects visuals (without JSON editor update to avoid premature updates)
+        selectedObjects.forEach(o => {
+          if(!o) return;
+          
+          // Skip canvas clamping for objects imported from JSON
+          if (!o.userData?.isImportedFromJSON) {
+            clampToCanvasRecursive(o);
+          }
+          
+          updateModelProperties(o);
+          updatePropertiesPanel(o);
+          updateBoxHelper(o);
+          
+          // If this is a group, also update child bounding boxes
+          if (o.userData?.isEditorGroup) {
+            updateChildBoundingBoxes(o);
+          }
+          
+          // If this object is a child in a group, update the parent group's bounding box
+          if (isChildObjectInGroup(o) && o.parent) {
+            updateParentGroupBounds(o.parent);
+          }
+          
+          // Only add dimension labels for selected objects
+          if(selectedObjects.includes(o)) {
+            addBoundingBoxDimensions(o);
+          }
+          
+          // Note: NOT calling updateJSONEditorFromScene() here to avoid premature JSON updates
+        });
+        
+        // Update canvas root box helper if it exists
+        if (canvasRoot.userData.boxHelper) {
+          updateCanvasBoxHelper(canvasRoot);
+        }
+        
+        // Update Object Root properties to reflect new canvas size
+        updateModelProperties(canvasRoot);
+        if (selectedObjects.includes(canvasRoot)) {
+          updatePropertiesPanel(canvasRoot);
+        }
+      }
+    }
+
     // Create a map of existing objects by composite key (name + sReference + uniqueId) for reference
     const existingObjects = new Map();
     canvasRoot.traverse(obj => {
@@ -3017,6 +3088,9 @@ async function parseJSONAndUpdateScene(jsonText) {
           delete obj.userData.jsonBounds;
         }
       });
+      
+      // Update JSON editor to reflect any changes (including canvas size changes)
+      updateJSONEditor();
       
     } catch (error) {
       console.error('❌ Error parsing JSON:', error);
@@ -3268,15 +3342,27 @@ async function updateOrCreateObject(node, parent, existingObjects) {
   const objectName = node.pResource.sName || "Imported Object";
   const sReference = node.pResource.sReference || '';
   
-  // Generate a unique internal identifier for this object instance
-  // This allows multiple objects with the same sName and sReference to coexist
-  const uniqueId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  // First, try to find an existing object by base key (without unique ID)
+  const baseKey = `${objectName}|${sReference}`;
+  let obj = null;
+  let uniqueId = '';
+  
+  // Look for existing object with matching base key
+  for (const [key, existingObj] of existingObjects) {
+    if (key.startsWith(baseKey + '|') || key === baseKey) {
+      obj = existingObj;
+      uniqueId = existingObj.userData?.uniqueInternalId || '';
+      break;
+    }
+  }
+  
+  // If no existing object found, generate a new unique ID
+  if (!obj) {
+    uniqueId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
   
   // Create a composite key using sName, sReference, and the unique internal identifier
   const compositeKey = `${objectName}|${sReference}|${uniqueId}`;
-  
-  // Check if we already have an object with this exact composite key
-  let obj = existingObjects.get(compositeKey);
   
   if (obj) {
     // Update existing object
@@ -3288,6 +3374,8 @@ async function updateOrCreateObject(node, parent, existingObjects) {
       // The processNodeHierarchically function will handle creating the group structure
       // We just need to make sure the existing object is marked correctly
     }
+    
+    return obj;
   } else {
     // Check if we have an object with the same sReference (for model reuse)
     // but different sName (for unique identification)
