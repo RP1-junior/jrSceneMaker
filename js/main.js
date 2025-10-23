@@ -54,6 +54,8 @@ let canvasRoot = new THREE.Group();
 canvasRoot.name = "Object Root";
 canvasRoot.userData.isSelectable = true;
 canvasRoot.userData.isCanvasRoot = true;
+// Initialize aBound with current groundSize
+canvasRoot.userData.aBound = [groundSize, groundSize, groundSize];
 scene.add(canvasRoot);
 
 let ruler = null;
@@ -161,15 +163,67 @@ fontLoader.load('https://threejs.org/examples/fonts/helvetiker_regular.typeface.
 });
 
 // ===== Utilities =====
+
+
+// Function to check if an object would exceed the bounding box constraints
+function wouldExceedBounds(obj) {
+  // Get the object root's bounding box (aBound) for clamping constraints
+  const rootBox = getBox(canvasRoot);
+  const rootSize = rootBox.getSize(new THREE.Vector3());
+  const rootCenter = rootBox.getCenter(new THREE.Vector3());
+  
+  // Calculate root bounds
+  const rootMinX = rootCenter.x - rootSize.x/2;
+  const rootMaxX = rootCenter.x + rootSize.x/2;
+  const rootMinY = rootCenter.y - rootSize.y/2;
+  const rootMaxY = rootCenter.y + rootSize.y/2;
+  const rootMinZ = rootCenter.z - rootSize.z/2;
+  const rootMaxZ = rootCenter.z + rootSize.z/2;
+  
+  // Get the object's current world bounding box
+  const worldBox = new THREE.Box3().setFromObject(obj);
+  const worldSize = worldBox.getSize(new THREE.Vector3());
+  const worldCenter = worldBox.getCenter(new THREE.Vector3());
+  
+  const worldMinX = worldCenter.x - worldSize.x/2, worldMaxX = worldCenter.x + worldSize.x/2;
+  const worldMinY = worldCenter.y - worldSize.y/2, worldMaxY = worldCenter.y + worldSize.y/2;
+  const worldMinZ = worldCenter.z - worldSize.z/2, worldMaxZ = worldCenter.z + worldSize.z/2;
+  
+  // Check if any part of the object would exceed the bounds
+  return (
+    worldMinX < rootMinX || worldMaxX > rootMaxX ||
+    worldMinY < rootMinY || worldMaxY > rootMaxY ||
+    worldMinZ < rootMinZ || worldMaxZ > rootMaxZ
+  );
+}
+
+// Store the last valid position for boundary enforcement
+let lastValidPosition = null;
+let lastValidQuaternion = null;
+let lastValidScale = null;
+
 function getBox(obj){ 
-  // Special handling for Object Root - return canvas bounding box
+  // Special handling for Object Root - return bounding box based on aBound or fallback to groundSize
   if (obj.userData?.isCanvasRoot) {
     const box = new THREE.Box3();
-    const halfSize = groundSize / 2;
-    const height = groundSize;
+    
+    // Check if object root has aBound data stored
+    let sizeX, sizeY, sizeZ;
+    if (obj.userData?.aBound && Array.isArray(obj.userData.aBound) && obj.userData.aBound.length >= 3) {
+      // Use stored aBound values
+      sizeX = obj.userData.aBound[0];
+      sizeY = obj.userData.aBound[1];
+      sizeZ = obj.userData.aBound[2];
+    } else {
+      // Fallback to groundSize for backward compatibility
+      sizeX = groundSize;
+      sizeY = groundSize;
+      sizeZ = groundSize;
+    }
+    
     box.setFromCenterAndSize(
-      new THREE.Vector3(0, height / 2, 0), // Center matches canvas box helper
-      new THREE.Vector3(groundSize, height, groundSize) // Size matches canvas dimensions
+      new THREE.Vector3(0, sizeY / 2, 0), // Center at half height
+      new THREE.Vector3(sizeX, sizeY, sizeZ) // Use aBound dimensions
     );
     return box;
   }
@@ -306,48 +360,87 @@ function snapUniformScale(obj, step=SNAP_STEP){
 
 function clampToCanvas(obj){
   
-  const half = groundSize/2;
-  const box = getBox(obj);
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const minX = center.x - size.x/2, maxX = center.x + size.x/2;
-  const minZ = center.z - size.z/2, maxZ = center.z + size.z/2;
+  // Get the object root's bounding box (aBound) for clamping constraints
+  const rootBox = getBox(canvasRoot);
+  const rootSize = rootBox.getSize(new THREE.Vector3());
+  const rootCenter = rootBox.getCenter(new THREE.Vector3());
   
+  // Calculate root bounds
+  const rootMinX = rootCenter.x - rootSize.x/2;
+  const rootMaxX = rootCenter.x + rootSize.x/2;
+  const rootMinY = rootCenter.y - rootSize.y/2;
+  const rootMaxY = rootCenter.y + rootSize.y/2;
+  const rootMinZ = rootCenter.z - rootSize.z/2;
+  const rootMaxZ = rootCenter.z + rootSize.z/2;
   
-  if (minX < -half) {
-    const adjustment = -half - minX;
-    obj.position.x += adjustment;
+  // For nested objects, we need to work with world positions
+  const worldBox = new THREE.Box3().setFromObject(obj);
+  const worldSize = worldBox.getSize(new THREE.Vector3());
+  const worldCenter = worldBox.getCenter(new THREE.Vector3());
+  
+  const worldMinX = worldCenter.x - worldSize.x/2, worldMaxX = worldCenter.x + worldSize.x/2;
+  const worldMinY = worldCenter.y - worldSize.y/2, worldMaxY = worldCenter.y + worldSize.y/2;
+  const worldMinZ = worldCenter.z - worldSize.z/2, worldMaxZ = worldCenter.z + worldSize.z/2;
+  
+  // Calculate adjustments needed
+  let adjustmentX = 0, adjustmentY = 0, adjustmentZ = 0;
+  
+  // Clamp X axis
+  if (worldMinX < rootMinX) {
+    adjustmentX = rootMinX - worldMinX;
   }
-  if (maxX >  half) {
-    const adjustment = maxX - half;
-    obj.position.x -= adjustment;
+  if (worldMaxX > rootMaxX) {
+    adjustmentX = rootMaxX - worldMaxX;
   }
-  if (minZ < -half) {
-    const adjustment = -half - minZ;
-    obj.position.z += adjustment;
+  
+  // Clamp Y axis
+  if (worldMinY < rootMinY) {
+    adjustmentY = rootMinY - worldMinY;
   }
-  if (maxZ >  half) {
-    const adjustment = maxZ - half;
-    obj.position.z -= adjustment;
+  if (worldMaxY > rootMaxY) {
+    adjustmentY = rootMaxY - worldMaxY;
   }
-  if (box.min.y < 0) {
-    const adjustment = -box.min.y;
-    obj.position.y += adjustment;
+  
+  // Clamp Z axis
+  if (worldMinZ < rootMinZ) {
+    adjustmentZ = rootMinZ - worldMinZ;
+  }
+  if (worldMaxZ > rootMaxZ) {
+    adjustmentZ = rootMaxZ - worldMaxZ;
+  }
+  
+  // Apply adjustments
+  if (adjustmentX !== 0 || adjustmentY !== 0 || adjustmentZ !== 0) {
+    // For nested objects, we need to adjust the world position
+    // by modifying the local position relative to the parent
+    const worldAdjustment = new THREE.Vector3(adjustmentX, adjustmentY, adjustmentZ);
+    
+    if (obj.parent && obj.parent !== scene) {
+      // Convert world adjustment to local adjustment
+      const localAdjustment = worldAdjustment.clone();
+      obj.parent.worldToLocal(localAdjustment);
+      obj.position.add(localAdjustment);
+    } else {
+      // Direct world position adjustment for top-level objects
+      obj.position.add(worldAdjustment);
+    }
   }
   
 }
 
 function clampToCanvasRecursive(obj){
   
-  // Only clamp top-level groups as single units
-  // Nested groups should move with their parent group, not be individually clamped
+  // Always clamp the object itself, regardless of whether it's in a group or not
+  // This ensures that ALL objects (including nested ones) respect the bounding box constraints
+  clampToCanvas(obj);
+  
+  // If this is a group, also clamp all its children recursively
   if (obj.userData?.isEditorGroup) {
-    // Only clamp the group as a whole unit
-    // Do NOT recursively clamp nested groups - they should move with the parent
-    clampToCanvas(obj);
-  } else {
-    // For non-groups, clamp normally
-    clampToCanvas(obj);
+    obj.children.forEach(child => {
+      if (child.userData?.isSelectable) {
+        clampToCanvasRecursive(child);
+      }
+    });
   }
   
 }
@@ -373,6 +466,9 @@ function updateModelProperties(model){
 
     // Calculate triangle count
     const triangleCount = getTriangleCount(model);
+
+    // Store aBound data for clamping constraints
+    model.userData.aBound = [groundSize, groundSize, groundSize];
 
     model.userData.properties = {
       pos: worldPosition,
@@ -2268,7 +2364,8 @@ canvasSizeInput.addEventListener("change", e=>{
     updateCanvasBoxHelper(canvasRoot);
   }
   
-  // Update Object Root properties to reflect new canvas size
+  // Update Object Root aBound and properties to reflect new canvas size
+  canvasRoot.userData.aBound = [groundSize, groundSize, groundSize];
   updateModelProperties(canvasRoot);
   if (selectedObjects.includes(canvasRoot)) {
     updatePropertiesPanel(canvasRoot);
@@ -2499,7 +2596,13 @@ transform.addEventListener("dragging-changed", e=>{
   orbit.enabled = !e.value;
 
   if (e.value) {
-    // Starting to drag
+    // Starting to drag - store the last valid position
+    if (selectedObject && !selectedObject.userData?.isCanvasRoot) {
+      lastValidPosition = selectedObject.position.clone();
+      lastValidQuaternion = selectedObject.quaternion.clone();
+      lastValidScale = selectedObject.scale.clone();
+    }
+    
     if (isAltPressed && selectedObject && !isDuplicating && !selectedObject.userData?.isCanvasRoot) {
       // Create duplicate and switch to it
       isDuplicating = true;
@@ -2552,7 +2655,11 @@ transform.addEventListener("dragging-changed", e=>{
       }
     }
   } else {
-    // Finished dragging
+    // Finished dragging - clean up stored positions
+    lastValidPosition = null;
+    lastValidQuaternion = null;
+    lastValidScale = null;
+    
     if (isDuplicating) {
       isDuplicating = false;
       originalObject = null;
@@ -2585,37 +2692,31 @@ transform.addEventListener("objectChange", ()=>{
 
   const mode = transform.getMode();
 
+  // Check if the object would exceed bounds during dragging
+  if (transform.dragging && wouldExceedBounds(selectedObject)) {
+    // Restore the last valid position to prevent movement beyond bounds
+    if (lastValidPosition && lastValidQuaternion && lastValidScale) {
+      selectedObject.position.copy(lastValidPosition);
+      selectedObject.quaternion.copy(lastValidQuaternion);
+      selectedObject.scale.copy(lastValidScale);
+      return; // Skip the rest of the function since we've restored the position
+    }
+  } else if (transform.dragging) {
+    // Update the last valid position if we're still within bounds
+    lastValidPosition = selectedObject.position.clone();
+    lastValidQuaternion = selectedObject.quaternion.clone();
+    lastValidScale = selectedObject.scale.clone();
+  }
+
   if(mode === "scale"){
     const s = selectedObject.scale.x;
     selectedObject.scale.set(s,s,s);
     snapUniformScale(selectedObject, SNAP_STEP);
   }
 
-  // Don't clamp during rotation to avoid interfering with the rotation gizmo
-  if(mode === "rotate") {
-    // Only update visuals without clamping during rotation
-    updateModelProperties(selectedObject);
-    updatePropertiesPanel(selectedObject);
-    updateBoxHelper(selectedObject);
-
-    // If this is a group, also update child bounding boxes
-    if (selectedObject.userData?.isEditorGroup) {
-      updateChildBoundingBoxes(selectedObject);
-    }
-
-    // If this object is a child in a group, update the parent group's bounding box
-    if (isChildObjectInGroup(selectedObject) && selectedObject.parent) {
-      updateParentGroupBounds(selectedObject.parent);
-    }
-
-    // Only add dimension labels for selected objects
-    if(selectedObjects.includes(selectedObject)) {
-      addBoundingBoxDimensions(selectedObject);
-    }
-  } else {
-    // For translate and scale modes, use full updateAllVisuals (including clamping)
-    updateAllVisuals(selectedObject);
-  }
+  // For all modes, apply clamping to ensure objects stay within bounds
+  // This includes rotation mode - objects should not be allowed to rotate outside the bounding box
+  updateAllVisuals(selectedObject);
 
   // Update JSON editor to reflect local transform values for all objects
   updateJSONEditorFromScene();
@@ -3027,7 +3128,8 @@ async function parseJSONAndUpdateScene(jsonText) {
           updateCanvasBoxHelper(canvasRoot);
         }
         
-        // Update Object Root properties to reflect new canvas size
+        // Update Object Root aBound and properties to reflect new canvas size
+        canvasRoot.userData.aBound = [groundSize, groundSize, groundSize];
         updateModelProperties(canvasRoot);
         if (selectedObjects.includes(canvasRoot)) {
           updatePropertiesPanel(canvasRoot);
