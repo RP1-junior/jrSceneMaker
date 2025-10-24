@@ -2914,19 +2914,19 @@ renderer.domElement.addEventListener("contextmenu", e=>{
 
     if (nonCanvasObjects.length === 1) {
       const obj = nonCanvasObjects[0];
-      // If it's a parent group, show "Detach" to dissolve the entire group
-      if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
-        actions.splice(1, 0, "Dissolve Group"); // Insert "Detach" after "Duplicate"
-      }
-      // If it's a child in a group with at least 2 non-parent children, show "Detach from Group"
-      else if (isChildObjectInGroup(obj)) {
+      // Check if it's a child in a group first (this handles both regular objects and nested groups)
+      if (isChildObjectInGroup(obj)) {
         const parentGroup = obj.parent;
         if (parentGroup.children.length >= 3) {
           actions.splice(1, 0, "Detach from Group");
         } else {
-          // Only 1 non-parent child left, show "Detach" to dissolve the group
+          // Only 1 non-parent child left, show "Dissolve Group" to dissolve the parent group
           actions.splice(1, 0, "Dissolve Group");
         }
+      }
+      // If it's a parent group (but not a child in another group), show "Dissolve Group" to dissolve itself
+      else if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
+        actions.splice(1, 0, "Dissolve Group"); // Insert "Dissolve Group" after "Duplicate"
       }
     } else {
       // Multiple objects selected - check if any are children in groups with enough children
@@ -2965,19 +2965,19 @@ modelList.addEventListener("contextmenu", e=>{
 
     if (nonCanvasObjects.length === 1) {
       const obj = nonCanvasObjects[0];
-      // If it's a parent group, show "Detach" to dissolve the entire group
-      if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
-        actions.splice(1, 0, "Dissolve Group"); // Insert "Detach" after "Duplicate"
-      }
-      // If it's a child in a group with at least 2 non-parent children, show "Detach from Group"
-      else if (isChildObjectInGroup(obj)) {
+      // Check if it's a child in a group first (this handles both regular objects and nested groups)
+      if (isChildObjectInGroup(obj)) {
         const parentGroup = obj.parent;
         if (parentGroup.children.length >= 3) {
           actions.splice(1, 0, "Detach from Group");
         } else {
-          // Only 1 non-parent child left, show "Detach" to dissolve the group
+          // Only 1 non-parent child left, show "Dissolve Group" to dissolve the parent group
           actions.splice(1, 0, "Dissolve Group");
         }
+      }
+      // If it's a parent group (but not a child in another group), show "Dissolve Group" to dissolve itself
+      else if ((obj instanceof THREE.Group) && obj.userData?.isEditorGroup === true) {
+        actions.splice(1, 0, "Dissolve Group"); // Insert "Dissolve Group" after "Duplicate"
       }
     } else {
       // Multiple objects selected - check if any are children in groups with enough children
