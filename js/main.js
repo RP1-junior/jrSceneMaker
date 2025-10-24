@@ -461,6 +461,80 @@ function findTopLevelGroup(obj) {
   return current;
 }
 
+// Function to extract texture resolution information from GLTF models
+function getTextureResolutionInfo(model) {
+  const textureInfo = {
+    textures: [],
+    totalTextures: 0,
+    maxResolution: { width: 0, height: 0 },
+    minResolution: { width: Infinity, height: Infinity }
+  };
+
+  if (!model) return textureInfo;
+
+  // Traverse the model to find all materials and their textures
+  model.traverse((child) => {
+    if (child.material) {
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      
+      materials.forEach(material => {
+        // Check various texture maps
+        const textureMaps = [
+          { name: 'map', texture: material.map },
+          { name: 'normalMap', texture: material.normalMap },
+          { name: 'roughnessMap', texture: material.roughnessMap },
+          { name: 'metalnessMap', texture: material.metalnessMap },
+          { name: 'emissiveMap', texture: material.emissiveMap },
+          { name: 'aoMap', texture: material.aoMap },
+          { name: 'displacementMap', texture: material.displacementMap },
+          { name: 'alphaMap', texture: material.alphaMap },
+          { name: 'lightMap', texture: material.lightMap },
+          { name: 'bumpMap', texture: material.bumpMap },
+          { name: 'envMap', texture: material.envMap }
+        ];
+
+        textureMaps.forEach(({ name, texture }) => {
+          if (texture && texture.image) {
+            const width = texture.image.width || texture.image.videoWidth || 0;
+            const height = texture.image.height || texture.image.videoHeight || 0;
+            
+            if (width > 0 && height > 0) {
+              textureInfo.textures.push({
+                type: name,
+                width: width,
+                height: height,
+                resolution: `${width}x${height}`,
+                materialName: material.name || 'Unnamed Material'
+              });
+              
+              textureInfo.totalTextures++;
+              
+              // Update max resolution
+              if (width > textureInfo.maxResolution.width || height > textureInfo.maxResolution.height) {
+                textureInfo.maxResolution.width = Math.max(textureInfo.maxResolution.width, width);
+                textureInfo.maxResolution.height = Math.max(textureInfo.maxResolution.height, height);
+              }
+              
+              // Update min resolution
+              if (width < textureInfo.minResolution.width || height < textureInfo.minResolution.height) {
+                textureInfo.minResolution.width = Math.min(textureInfo.minResolution.width, width);
+                textureInfo.minResolution.height = Math.min(textureInfo.minResolution.height, height);
+              }
+            }
+          }
+        });
+      });
+    }
+  });
+
+  // Reset min resolution if no textures found
+  if (textureInfo.totalTextures === 0) {
+    textureInfo.minResolution = { width: 0, height: 0 };
+  }
+
+  return textureInfo;
+}
+
 function updateModelProperties(model){
   if(!model) return;
   
@@ -474,6 +548,9 @@ function updateModelProperties(model){
     // Calculate triangle count
     const triangleCount = getTriangleCount(model);
 
+    // Get texture resolution information
+    const textureInfo = getTextureResolutionInfo(model);
+
     // Store aBound data for clamping constraints
     model.userData.aBound = [groundSize, groundSize, groundSize];
 
@@ -482,7 +559,8 @@ function updateModelProperties(model){
       scl: worldScale,
       rot: worldQuaternion.clone(),
       size: canvasSize.clone(),
-      triangles: triangleCount
+      triangles: triangleCount,
+      textures: textureInfo
     };
     return;
   }
@@ -498,12 +576,16 @@ function updateModelProperties(model){
   // Calculate triangle count
   const triangleCount = getTriangleCount(model);
 
+  // Get texture resolution information
+  const textureInfo = getTextureResolutionInfo(model);
+
   model.userData.properties = {
     pos: localPosition,
     scl: localScale,
     rot: localQuaternion.clone(),
     size: size.clone(),
-    triangles: triangleCount
+    triangles: triangleCount,
+    textures: textureInfo
   };
 }
 
@@ -513,12 +595,27 @@ function updatePropertiesPanel(model){
     return;
   }
   const p = model.userData.properties;
-  propertiesPanel.textContent =
+  let propertiesText = 
     `Position: (${p.pos.x.toFixed(2)}, ${p.pos.y.toFixed(2)}, ${p.pos.z.toFixed(2)})\n`+
     `Rotation: (${p.rot.x.toFixed(4)}, ${p.rot.y.toFixed(4)}, ${p.rot.z.toFixed(4)}, ${p.rot.w.toFixed(4)})\n`+
     `Scale: (${p.scl.x.toFixed(2)}, ${p.scl.y.toFixed(2)}, ${p.scl.z.toFixed(2)})\n`+
     `Bounds: (${p.size.x.toFixed(2)}, ${p.size.y.toFixed(2)}, ${p.size.z.toFixed(2)})\n`+
     `Triangles: ${p.triangles.toLocaleString()}`;
+
+  // Add concise texture information
+  if (p.textures && p.textures.totalTextures > 0) {
+    if (p.textures.maxResolution.width === p.textures.minResolution.width) {
+      // All textures same resolution
+      propertiesText += `\nTextures: ${p.textures.totalTextures} @ ${p.textures.maxResolution.width}x${p.textures.maxResolution.height}`;
+    } else {
+      // Mixed resolutions
+      propertiesText += `\nTextures: ${p.textures.totalTextures} (${p.textures.minResolution.width}x${p.textures.minResolution.height} - ${p.textures.maxResolution.width}x${p.textures.maxResolution.height})`;
+    }
+  } else {
+    propertiesText += `\nTextures: None`;
+  }
+
+  propertiesPanel.textContent = propertiesText;
 }
 
 function updateTransformButtonStates(){
