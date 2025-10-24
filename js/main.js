@@ -84,7 +84,7 @@ function getCacheKey(sReference) {
   return sReference || '';
 }
 
-async function loadModelFromReference(sReference) {
+async function loadModelFromReference(sReference, boundingBox = null) {
   const cacheKey = getCacheKey(sReference);
   
   // Return cached model if available
@@ -118,7 +118,14 @@ async function loadModelFromReference(sReference) {
       );
     } else {
       // For non-URL references, create a placeholder
-      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      // Use bounding box dimensions if available, otherwise default to 1x1x1
+      const dimensions = boundingBox && Array.isArray(boundingBox) && boundingBox.length >= 3 
+        ? boundingBox 
+        : [1, 1, 1];
+      
+      const geometry = new THREE.BoxGeometry(dimensions[0], dimensions[1], dimensions[2]);
+      // Translate geometry so local origin is at bottom center instead of center
+      geometry.translate(0, dimensions[1] / 2, 0);
       const material = new THREE.MeshBasicMaterial({ color: 0x888888 });
       const placeholder = new THREE.Mesh(geometry, material);
       placeholder.name = sReference ? sReference.replace(/\.[^/.]+$/, "") : "Placeholder";
@@ -3680,7 +3687,7 @@ async function createObjectFromNode(node) {
   
   try {
     // Load the model from sReference (URL or local file)
-    const sourceModel = await loadModelFromReference(sReference);
+    const sourceModel = await loadModelFromReference(sReference, node.aBound);
     
     // Clone the model to create a new instance
     const obj = sourceModel.clone(true);
@@ -3751,7 +3758,14 @@ async function createObjectFromNode(node) {
     console.error(`Failed to create object from node with sReference: ${sReference}`, error);
     
     // Create a fallback placeholder object
-    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    // Use bounding box dimensions if available, otherwise default to 1x1x1
+    const dimensions = node.aBound && Array.isArray(node.aBound) && node.aBound.length >= 3 
+      ? node.aBound 
+      : [1, 1, 1];
+    
+    const geometry = new THREE.BoxGeometry(dimensions[0], dimensions[1], dimensions[2]);
+    // Translate geometry so local origin is at bottom center instead of center
+    geometry.translate(0, dimensions[1] / 2, 0);
     const material = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red to indicate error
     const obj = new THREE.Mesh(geometry, material);
     
