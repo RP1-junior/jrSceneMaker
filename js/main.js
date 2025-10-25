@@ -3405,10 +3405,20 @@ async function processNodeHierarchically(node, parent, existingObjects) {
       parent.remove(obj);
       group.add(obj);
       
+      // Store the object's current transform before resetting
+      const originalPosition = obj.position.clone();
+      const originalQuaternion = obj.quaternion.clone();
+      const originalScale = obj.scale.clone();
+      
       // Reset object's transform relative to group (it becomes the "parent" object)
       obj.position.set(0, 0, 0);
       obj.quaternion.set(0, 0, 0, 1);
       obj.scale.set(1, 1, 1);
+      
+      // Apply the original transform to the group instead, preserving the JSON-defined position
+      group.position.copy(originalPosition);
+      group.quaternion.copy(originalQuaternion);
+      group.scale.copy(originalScale);
       
       // Clean up object's sidebar representation
       if (obj.userData.listItem) {
@@ -3874,6 +3884,39 @@ async function createObjectFromNode(node) {
       originalFileName: sReference,
       baseName: objectName
     };
+    
+    // Store bounding box from JSON if available
+    if (node.aBound && Array.isArray(node.aBound) && node.aBound.length >= 3) {
+      obj.userData.jsonBounds = {
+        size: new THREE.Vector3(node.aBound[0], node.aBound[1], node.aBound[2])
+      };
+    }
+    
+    // Apply transform from JSON to preserve position
+    if (node.pTransform) {
+      if (node.pTransform.aPosition) {
+        obj.position.set(
+          node.pTransform.aPosition[0],
+          node.pTransform.aPosition[1],
+          node.pTransform.aPosition[2]
+        );
+      }
+      if (node.pTransform.aRotation) {
+        obj.quaternion.set(
+          node.pTransform.aRotation[0],
+          node.pTransform.aRotation[1],
+          node.pTransform.aRotation[2],
+          node.pTransform.aRotation[3]
+        );
+      }
+      if (node.pTransform.aScale) {
+        obj.scale.set(
+          node.pTransform.aScale[0],
+          node.pTransform.aScale[1],
+          node.pTransform.aScale[2]
+        );
+      }
+    }
     
     return obj;
   }
