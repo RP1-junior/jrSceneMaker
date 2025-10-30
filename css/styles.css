@@ -64,7 +64,7 @@ body {
   user-select: none;
 }
 
-#rightSidebar {
+#codeBar {
   position: absolute;
   top: 80px;
   right: 10px;
@@ -74,12 +74,11 @@ body {
   background: rgba(0, 0, 0, 0.6);
   padding: 6px;
   border-radius: 4px;
-  user-select: none;
   display: flex;
   flex-direction: column;
 }
 
-#rightSidebar strong {
+#codeBar strong {
   color: white;
   font-size: 13px;
   margin-bottom: 8px;
@@ -88,12 +87,11 @@ body {
 
 #jsonEditor {
   flex: 1;
-  min-height: 75vh;
+  max-height: 75vh;
   background: #1a1a1a;
   color: #ffffff;
   border: 1px solid #555;
   border-radius: 3px;
-  padding: 8px;
   font-family: 'Courier New', monospace;
   font-size: 11px;
   line-height: 1.4;
@@ -251,5 +249,3 @@ body {
   border-left: 3px solid #ffcc00;
   background: #444;
 }
-
-

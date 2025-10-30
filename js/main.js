@@ -150,6 +150,26 @@ const btnDelete = document.getElementById("delete");
 const btnUndo = document.getElementById("undo");
 const btnResetCamera = document.getElementById("resetCamera");
 const jsonEditor = document.getElementById("jsonEditor");
+function getJSONEditorText(){
+  if (window.jsonEditorAPI && typeof window.jsonEditorAPI.getValue === 'function') {
+    return window.jsonEditorAPI.getValue();
+  }
+  if (jsonEditor) {
+    if (jsonEditor.dataset && jsonEditor.dataset.initial) return jsonEditor.dataset.initial;
+    if ('value' in jsonEditor && jsonEditor.value) return jsonEditor.value;
+    return jsonEditor.textContent || '';
+  }
+  return '';
+}
+function setJSONEditorText(text){
+  if (window.jsonEditorAPI && typeof window.jsonEditorAPI.setValue === 'function') {
+    window.jsonEditorAPI.setValue(text);
+  } else if (jsonEditor) {
+    // Buffer initial content until CodeMirror initializes (do not render visibly)
+    if (jsonEditor.dataset) jsonEditor.dataset.initial = text;
+    if ('value' in jsonEditor) jsonEditor.value = text; // if textarea fallback exists
+  }
+}
 const exportJson = document.getElementById("exportJson");
 const applyChanges = document.getElementById("applyChanges");
 
@@ -2597,7 +2617,7 @@ renderer.domElement.addEventListener("dblclick", e=>{
 window.addEventListener("keydown", e=>{
   const key = e.key.toLowerCase();
   const inForm = (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
-  const isJSONEditor = e.target === jsonEditor;
+  const isJSONEditor = jsonEditor && (jsonEditor === e.target || (jsonEditor.contains && jsonEditor.contains(e.target)));
   const isHotkey = ["w","e","r","q","f","h","z","delete","d","alt"].includes(key);
   
   // Block all hotkeys when JSON editor is focused
@@ -3128,7 +3148,7 @@ function generateSceneJSON() {
 
 function updateJSONEditor() {
   if (jsonEditor) {
-    jsonEditor.value = generateSceneJSON();
+    setJSONEditorText(generateSceneJSON());
   }
 }
 
@@ -3150,7 +3170,7 @@ let hasUnsavedChanges = false;
 function updateJSONEditorFromScene() {
   if (jsonEditor && !hasUnsavedChanges) {
     originalJSON = generateSceneJSON();
-    jsonEditor.value = originalJSON;
+    setJSONEditorText(originalJSON);
   }
 }
 
@@ -3302,7 +3322,7 @@ async function parseJSONAndUpdateScene(jsonText) {
       console.error('❌ Error parsing JSON:', error);
       alert('Invalid JSON format. Please check your syntax.');
       // Restore original JSON on error
-      jsonEditor.value = originalJSON;
+    setJSONEditorText(originalJSON);
     }
 }
 
@@ -3925,8 +3945,9 @@ async function createObjectFromNode(node) {
 // JSON editor event listeners
 if (jsonEditor) {
   // Detect changes in JSON editor
-  jsonEditor.addEventListener('input', () => {
-    hasUnsavedChanges = jsonEditor.value !== originalJSON;
+  jsonEditor.addEventListener('json-change', (e) => {
+    const current = e?.detail?.value ?? getJSONEditorText();
+    hasUnsavedChanges = current !== originalJSON;
     applyChanges.style.display = hasUnsavedChanges ? 'block' : 'none';
   });
 
@@ -3937,7 +3958,7 @@ if (jsonEditor) {
 
   // Apply changes button
   applyChanges.addEventListener('click', async () => {
-    await parseJSONAndUpdateScene(jsonEditor.value);
+    await parseJSONAndUpdateScene(getJSONEditorText());
   });
 
   // Initial JSON update

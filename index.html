@@ -29,9 +29,9 @@
   <pre id="properties"></pre>
 </div>
 
-<div id="rightSidebar">
+<div id="codeBar">
   <strong>Code Editor</strong>
-  <textarea id="jsonEditor" placeholder="Scene JSON will appear here..."></textarea>
+  <div id="jsonEditor"></div>
   <div id="jsonButtons">
     <button id="applyChanges" style="display: none;">Apply Changes</button>
     <button id="exportJson">Export JSON</button>
@@ -62,5 +62,72 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <!-- App -->
 <script src="js/main.js"></script>
+<script type="module">
+import {EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection} from 'https://esm.sh/@codemirror/view@6';
+import {EditorState} from 'https://esm.sh/@codemirror/state@6';
+import {defaultHighlightStyle, syntaxHighlighting, foldGutter, foldKeymap, bracketMatching} from 'https://esm.sh/@codemirror/language@6';
+import {json, jsonParseLinter} from 'https://esm.sh/@codemirror/lang-json@6';
+import {defaultKeymap, history, historyKeymap} from 'https://esm.sh/@codemirror/commands@6';
+import {searchKeymap, highlightSelectionMatches} from 'https://esm.sh/@codemirror/search@6';
+import {closeBrackets, closeBracketsKeymap} from 'https://esm.sh/@codemirror/autocomplete@6';
+import {linter, lintGutter} from 'https://esm.sh/@codemirror/lint@6';
+import {oneDark} from 'https://esm.sh/@codemirror/theme-one-dark@6';
+
+const container = document.getElementById('jsonEditor');
+let initialDoc = container?.dataset?.initial || container?.textContent || '';
+// Clear any existing visible text to avoid duplicate rendering next to CodeMirror
+if (container) container.textContent = '';
+const updateListeners = [];
+
+const view = new EditorView({
+  state: EditorState.create({
+    doc: initialDoc,
+    extensions: [
+      EditorState.allowMultipleSelections.of(true),
+      oneDark,
+      lineNumbers(),
+      foldGutter(),
+      highlightActiveLine(),
+      drawSelection(),
+      bracketMatching(),
+      closeBrackets(),
+      highlightSelectionMatches(),
+      lintGutter(),
+      linter(jsonParseLinter()),
+      history(),
+      keymap.of([
+        ...defaultKeymap,
+        ...historyKeymap,
+        ...searchKeymap,
+        ...foldKeymap,
+        ...closeBracketsKeymap
+      ]),
+      syntaxHighlighting(defaultHighlightStyle, {fallback: true}),
+      json(),
+      EditorView.updateListener.of(v => {
+        if (v.docChanged) {
+          const value = v.state.doc.toString();
+          container.dispatchEvent(new CustomEvent('json-change', {detail: {value}}));
+        }
+        if (v.focusChanged && view.hasFocus) {
+          container.dispatchEvent(new Event('focus'));
+        }
+      })
+    ]
+  }),
+  parent: container
+});
+
+window.jsonEditorAPI = {
+  getValue() { return view.state.doc.toString(); },
+  setValue(text) {
+    const curLen = view.state.doc.length;
+    view.dispatch({changes: {from: 0, to: curLen, insert: text}});
+  },
+  focus() { view.focus(); }
+};
+// Clear the buffered initial data attribute once the editor is ready
+if (container && container.dataset) delete container.dataset.initial;
+</script>
 </body>
 </html>
