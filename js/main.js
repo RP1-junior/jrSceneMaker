@@ -3143,7 +3143,21 @@ function buildNode(obj){
 function generateSceneJSON() {
   const objectRootNode = buildNode(canvasRoot);
   const exportData = objectRootNode ? [objectRootNode] : [];
-  return JSON.stringify(exportData, null, 2);
+  const jsonString = JSON.stringify(exportData, null, 2);
+  
+  // Make transform, position, scale, and bound arrays more compact (single line)
+  // Match arrays that span multiple lines and compact them to a single line
+  return jsonString.replace(
+    /("(?:aPosition|aRotation|aScale|aBound)"\s*:\s*)\[[\s\n\r]*(.*?)[\s\n\r]*\]/gs,
+    (match, prefix, values) => {
+      // Extract all numbers/values from the array, preserving commas
+      const compactValues = values
+        .replace(/[\n\r]/g, ' ')  // Replace newlines with spaces
+        .replace(/\s+/g, ' ')      // Collapse multiple spaces to one
+        .trim();
+      return prefix + '[' + compactValues + ']';
+    }
+  );
 }
 
 function updateJSONEditor() {
