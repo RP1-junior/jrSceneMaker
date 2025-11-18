@@ -3162,7 +3162,18 @@ function generateSceneJSON() {
 
 function updateJSONEditor() {
   if (jsonEditor) {
-    setJSONEditorText(generateSceneJSON());
+    isProgrammaticUpdate = true;
+    const generatedJSON = generateSceneJSON();
+    setJSONEditorText(generatedJSON);
+    // Update originalJSON to match what was actually set, so comparison works correctly
+    originalJSON = generatedJSON;
+    hasUnsavedChanges = false;
+    // Hide the apply button since there are no unsaved changes
+    applyChanges.style.display = 'none';
+    // Use setTimeout to ensure the json-change event has been processed
+    setTimeout(() => {
+      isProgrammaticUpdate = false;
+    }, 0);
   }
 }
 
@@ -3179,12 +3190,18 @@ exportJson.onclick = ()=>{
 // ===== JSON Editor Sync =====
 let originalJSON = '';
 let hasUnsavedChanges = false;
+let isProgrammaticUpdate = false; // Flag to ignore json-change events during programmatic updates
 
 // Update JSON editor when scene changes
 function updateJSONEditorFromScene() {
   if (jsonEditor && !hasUnsavedChanges) {
+    isProgrammaticUpdate = true;
     originalJSON = generateSceneJSON();
     setJSONEditorText(originalJSON);
+    // Use setTimeout to ensure the json-change event has been processed
+    setTimeout(() => {
+      isProgrammaticUpdate = false;
+    }, 0);
   }
 }
 
@@ -3288,38 +3305,28 @@ async function parseJSONAndUpdateScene(jsonText) {
       }
     });
     
+    // Track all objects that are processed/created during JSON import
+    const processedObjects = new Set();
+    // Track which base keys (sName|sReference) have been matched in this import
+    // This ensures multiple objects with the same base key all get created
+    const matchedBaseKeys = new Set();
 
     // Process objects and create groups based on JSON hierarchy
     if (rootNode.aChildren && Array.isArray(rootNode.aChildren)) {
       for (const childNode of rootNode.aChildren) {
-        await processNodeHierarchically(childNode, canvasRoot, existingObjects);
+        await processNodeHierarchically(childNode, canvasRoot, existingObjects, processedObjects, matchedBaseKeys);
       }
     }
 
-    // Remove objects that are no longer in the JSON
-    const jsonObjectKeys = new Set();
-    if (rootNode.aChildren) {
-      rootNode.aChildren.forEach(childNode => {
-        collectObjectKeysRecursively(childNode, jsonObjectKeys);
-      });
-    }
-    
+    // Remove objects that were not processed during JSON import
     existingObjects.forEach((obj, key) => {
-      // Check if this object should be kept by looking at the base composite key
-      // (without unique identifier) to see if it exists in the JSON
-      const baseKey = key.split('|').slice(0, 2).join('|'); // Remove unique identifier suffix
-      if (!jsonObjectKeys.has(baseKey)) {
+      if (!processedObjects.has(obj)) {
         cleanupObject(obj);
         if (obj.parent) obj.parent.remove(obj);
       }
     });
 
-    // Update original JSON and hide apply button
-      originalJSON = jsonText;
-      hasUnsavedChanges = false;
-      applyChanges.style.display = 'none';
-      
-      // Clear the isImportedFromJSON flags and jsonBounds so normal 3D editing rules apply
+    // Clear the isImportedFromJSON flags and jsonBounds so normal 3D editing rules apply
       scene.traverse((obj) => {
         if (obj.userData?.isImportedFromJSON) {
           delete obj.userData.isImportedFromJSON;
@@ -3330,22 +3337,34 @@ async function parseJSONAndUpdateScene(jsonText) {
       });
       
       // Update JSON editor to reflect any changes (including canvas size changes)
+      // This will also update originalJSON and hide the apply button
       updateJSONEditor();
       
     } catch (error) {
       console.error('❌ Error parsing JSON:', error);
       alert('Invalid JSON format. Please check your syntax.');
       // Restore original JSON on error
-    setJSONEditorText(originalJSON);
+      isProgrammaticUpdate = true;
+      setJSONEditorText(originalJSON);
+      hasUnsavedChanges = false;
+      applyChanges.style.display = 'none';
+      setTimeout(() => {
+        isProgrammaticUpdate = false;
+      }, 0);
     }
 }
 
-async function processNodeHierarchically(node, parent, existingObjects) {
+async function processNodeHierarchically(node, parent, existingObjects, processedObjects, matchedBaseKeys) {
   if (!node || !node.pResource) return null;
   
   // Create the object first
-  const obj = await updateOrCreateObject(node, parent, existingObjects);
+  const obj = await updateOrCreateObject(node, parent, existingObjects, processedObjects, matchedBaseKeys);
   if (!obj) return null;
+  
+  // Mark this object as processed
+  if (processedObjects) {
+    processedObjects.add(obj);
+  }
   
   // Check if this object has children
   if (node.aChildren && Array.isArray(node.aChildren) && node.aChildren.length > 0) {
@@ -3473,7 +3492,7 @@ async function processNodeHierarchically(node, parent, existingObjects) {
     
     // Process children and add them to the group using EXACT JSON values
     for (const childNode of node.aChildren) {
-      const childObject = await processNodeHierarchically(childNode, group, existingObjects);
+      const childObject = await processNodeHierarchically(childNode, group, existingObjects, processedObjects, matchedBaseKeys);
       if (childObject) {
         // Store original metadata for the child
         if (!childObject.userData) childObject.userData = {};
@@ -3586,33 +3605,50 @@ function collectObjectKeys(node, keys) {
   }
 }
 
-async function updateOrCreateObject(node, parent, existingObjects) {
+async function updateOrCreateObject(node, parent, existingObjects, processedObjects, matchedBaseKeys) {
   if (!node || !node.pResource) return null;
 
   const objectName = node.pResource.sName || "Imported Object";
   const sReference = node.pResource.sReference || '';
-  
-  // First, try to find an existing object by base key (without unique ID)
   const baseKey = `${objectName}|${sReference}`;
-  let obj = null;
-  let uniqueId = '';
   
-  // Look for existing object with matching base key
-  for (const [key, existingObj] of existingObjects) {
-    if (key.startsWith(baseKey + '|') || key === baseKey) {
-      obj = existingObj;
-      uniqueId = existingObj.userData?.uniqueInternalId || '';
-      break;
-    }
-  }
-  
-  // If no existing object found, generate a new unique ID
-  if (!obj) {
-    uniqueId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  }
+  // Always generate a new unique ID for JSON imports to ensure all objects are preserved
+  // even if they have the same sName|sReference
+  const uniqueId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
   // Create a composite key using sName, sReference, and the unique internal identifier
   const compositeKey = `${objectName}|${sReference}|${uniqueId}`;
+  
+  // Check if an object with this exact composite key already exists
+  let obj = existingObjects.get(compositeKey);
+  
+  // If no exact match, try to find an unprocessed object with matching base key
+  // BUT only if we haven't already matched this base key in this import
+  // This ensures multiple objects with the same sName|sReference all get created
+  if (!obj && (!matchedBaseKeys || !matchedBaseKeys.has(baseKey))) {
+    for (const [key, existingObj] of existingObjects) {
+      if ((key.startsWith(baseKey + '|') || key === baseKey) && 
+          (!processedObjects || !processedObjects.has(existingObj))) {
+        obj = existingObj;
+        // Mark this base key as matched so subsequent objects with the same key create new instances
+        if (matchedBaseKeys) {
+          matchedBaseKeys.add(baseKey);
+        }
+        // Update the unique ID to match the existing object
+        const existingUniqueId = existingObj.userData?.uniqueInternalId || uniqueId;
+        if (existingUniqueId && existingUniqueId !== uniqueId) {
+          // Update the composite key to use the existing unique ID
+          const updatedCompositeKey = `${objectName}|${sReference}|${existingUniqueId}`;
+          // Remove old key and add with new key if different
+          if (key !== updatedCompositeKey) {
+            existingObjects.delete(key);
+            existingObjects.set(updatedCompositeKey, existingObj);
+          }
+        }
+        break;
+      }
+    }
+  }
   
   if (obj) {
     // Update existing object
@@ -3714,6 +3750,11 @@ async function updateOrCreateObject(node, parent, existingObjects) {
       
       // Add the new object to the existingObjects map
       existingObjects.set(compositeKey, obj);
+      
+      // Mark this base key as used so subsequent objects with the same key create new instances
+      if (matchedBaseKeys) {
+        matchedBaseKeys.add(baseKey);
+      }
     } else {
       // Create completely new object
       obj = await createObjectFromNode(node);
@@ -3732,6 +3773,11 @@ async function updateOrCreateObject(node, parent, existingObjects) {
         
         // Add the new object to the existingObjects map
         existingObjects.set(compositeKey, obj);
+        
+        // Mark this base key as used so subsequent objects with the same key create new instances
+        if (matchedBaseKeys) {
+          matchedBaseKeys.add(baseKey);
+        }
       }
     }
   }
@@ -3960,6 +4006,10 @@ async function createObjectFromNode(node) {
 if (jsonEditor) {
   // Detect changes in JSON editor
   jsonEditor.addEventListener('json-change', (e) => {
+    // Ignore changes during programmatic updates
+    if (isProgrammaticUpdate) {
+      return;
+    }
     const current = e?.detail?.value ?? getJSONEditorText();
     hasUnsavedChanges = current !== originalJSON;
     applyChanges.style.display = hasUnsavedChanges ? 'block' : 'none';
