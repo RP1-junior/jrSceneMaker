@@ -3247,42 +3247,6 @@ async function parseJSONAndUpdateScene(jsonText) {
         // Update camera orbit controls
         orbit.maxDistance = groundSize * 1.5;
         
-        // Update selected objects visuals (without JSON editor update to avoid premature updates)
-        selectedObjects.forEach(o => {
-          if(!o) return;
-          
-          // Skip canvas clamping for objects imported from JSON
-          if (!o.userData?.isImportedFromJSON) {
-            clampToCanvasRecursive(o);
-          }
-          
-          updateModelProperties(o);
-          updatePropertiesPanel(o);
-          updateBoxHelper(o);
-          
-          // If this is a group, also update child bounding boxes
-          if (o.userData?.isEditorGroup) {
-            updateChildBoundingBoxes(o);
-          }
-          
-          // If this object is a child in a group, update the parent group's bounding box
-          if (isChildObjectInGroup(o) && o.parent) {
-            updateParentGroupBounds(o.parent);
-          }
-          
-          // Only add dimension labels for selected objects
-          if(selectedObjects.includes(o)) {
-            addBoundingBoxDimensions(o);
-          }
-          
-          // Note: NOT calling updateJSONEditorFromScene() here to avoid premature JSON updates
-        });
-        
-        // Update canvas root box helper if it exists
-        if (canvasRoot.userData.boxHelper) {
-          updateCanvasBoxHelper(canvasRoot);
-        }
-        
         // Update Object Root aBound and properties to reflect new canvas size
         canvasRoot.userData.aBound = [groundSize, groundSize, groundSize];
         updateModelProperties(canvasRoot);
@@ -3292,53 +3256,69 @@ async function parseJSONAndUpdateScene(jsonText) {
       }
     }
 
-    // Create a map of existing objects by composite key (name + sReference + uniqueId) for reference
-    const existingObjects = new Map();
+    // Clear all existing objects from canvasRoot (behave like a fresh import)
+    // First, deselect all objects and detach transform
+    deselectAllSidebar();
+    
+    // Collect all selectable objects in canvasRoot (for recursive cleanup)
+    const objectsToCleanup = [];
     canvasRoot.traverse(obj => {
-      if (obj.userData?.isSelectable && obj !== canvasRoot && obj.name) {
-        const sReference = obj.userData?.sourceRef?.reference || '';
-        const uniqueId = obj.userData?.uniqueInternalId || '';
-        const compositeKey = uniqueId ? 
-          `${obj.name}|${sReference}|${uniqueId}` :
-          `${obj.name}|${sReference}`;
-        existingObjects.set(compositeKey, obj);
+      if (obj !== canvasRoot && obj.userData?.isSelectable) {
+        objectsToCleanup.push(obj);
       }
     });
     
-    // Track all objects that are processed/created during JSON import
+    // Cleanup all objects (recursively handles children)
+    objectsToCleanup.forEach(obj => {
+      cleanupObject(obj);
+    });
+    
+    // Remove only direct children of canvasRoot (removing parents will remove their children automatically)
+    const childrenToRemove = [...canvasRoot.children].filter(child => child.userData?.isSelectable);
+    childrenToRemove.forEach(obj => {
+      canvasRoot.remove(obj);
+    });
+    
+    // Clear the sidebar model list (except canvasRoot item)
+    if (canvasRoot.userData.listItem) {
+      const canvasChildList = canvasRoot.userData.listItem.nextSibling;
+      if (canvasChildList && canvasChildList.tagName === "UL") {
+        while (canvasChildList.firstChild) {
+          canvasChildList.removeChild(canvasChildList.firstChild);
+        }
+      }
+    }
+    
+    // Create empty maps for fresh import (no existing objects to match)
+    const existingObjects = new Map();
     const processedObjects = new Set();
-    // Track which base keys (sName|sReference) have been matched in this import
-    // This ensures multiple objects with the same base key all get created
     const matchedBaseKeys = new Set();
 
-    // Process objects and create groups based on JSON hierarchy
+    // Process objects and create groups based on JSON hierarchy (fresh import)
     if (rootNode.aChildren && Array.isArray(rootNode.aChildren)) {
       for (const childNode of rootNode.aChildren) {
         await processNodeHierarchically(childNode, canvasRoot, existingObjects, processedObjects, matchedBaseKeys);
       }
     }
 
-    // Remove objects that were not processed during JSON import
-    existingObjects.forEach((obj, key) => {
-      if (!processedObjects.has(obj)) {
-        cleanupObject(obj);
-        if (obj.parent) obj.parent.remove(obj);
+    // Clear the isImportedFromJSON flags and jsonBounds so normal 3D editing rules apply
+    scene.traverse((obj) => {
+      if (obj.userData?.isImportedFromJSON) {
+        delete obj.userData.isImportedFromJSON;
+      }
+      if (obj.userData?.jsonBounds) {
+        delete obj.userData.jsonBounds;
       }
     });
-
-    // Clear the isImportedFromJSON flags and jsonBounds so normal 3D editing rules apply
-      scene.traverse((obj) => {
-        if (obj.userData?.isImportedFromJSON) {
-          delete obj.userData.isImportedFromJSON;
-        }
-        if (obj.userData?.jsonBounds) {
-          delete obj.userData.jsonBounds;
-        }
-      });
-      
-      // Update JSON editor to reflect any changes (including canvas size changes)
-      // This will also update originalJSON and hide the apply button
-      updateJSONEditor();
+    
+    // Update canvas root box helper after import
+    if (canvasRoot.userData.boxHelper) {
+      updateCanvasBoxHelper(canvasRoot);
+    }
+    
+    // Update JSON editor to reflect any changes (including canvas size changes)
+    // This will also update originalJSON and hide the apply button
+    updateJSONEditor();
       
     } catch (error) {
       console.error('❌ Error parsing JSON:', error);
